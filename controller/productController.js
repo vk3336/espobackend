@@ -148,6 +148,152 @@ const getProductsByMerchTags = async (req, res) => {
   }
 };
 
+// Generic method to get unique values for any field
+const getUniqueFieldValues = async (req, res) => {
+  try {
+    const { fieldName } = req.params;
+
+    if (!fieldName) {
+      return res.status(400).json({
+        success: false,
+        error: "fieldName parameter is required",
+      });
+    }
+
+    const data = await espoRequest(`/${ENTITY}`, {
+      query: {
+        maxSize: 100,
+        offset: 0,
+      },
+    });
+
+    const uniqueValues = new Set();
+
+    (data?.list ?? []).forEach((product) => {
+      const fieldValue = product[fieldName];
+
+      if (fieldValue) {
+        // Handle array fields (like color, content, finish)
+        if (Array.isArray(fieldValue)) {
+          fieldValue.forEach((item) => {
+            if (item && item.trim() !== "") {
+              uniqueValues.add(item.trim());
+            }
+          });
+        }
+        // Handle string fields (like category, design, structure, motif)
+        else if (typeof fieldValue === "string") {
+          const trimmedValue = fieldValue.trim();
+          if (trimmedValue !== "" && trimmedValue !== "N/A") {
+            uniqueValues.add(trimmedValue);
+          }
+        }
+      }
+    });
+
+    const sortedValues = Array.from(uniqueValues).sort();
+
+    res.json({
+      success: true,
+      field: fieldName,
+      values: sortedValues,
+      total: sortedValues.length,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({
+      success: false,
+      error: e.data || e.message,
+    });
+  }
+};
+
+// Generic method to get products by field name and value
+const getProductsByFieldValue = async (req, res) => {
+  try {
+    const { fieldName, fieldValue } = req.params;
+
+    if (!fieldName || !fieldValue) {
+      return res.status(400).json({
+        success: false,
+        error: "Both fieldName and fieldValue parameters are required",
+      });
+    }
+
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 20);
+    const offset = (page - 1) * limit;
+
+    // Fetch products from API
+    const data = await espoRequest(`/${ENTITY}`, {
+      query: {
+        maxSize: 100,
+        offset: 0,
+        orderBy: req.query.orderBy || "createdAt",
+        order: req.query.order || "desc",
+        select: req.query.select,
+      },
+    });
+
+    // Filter products that match the field value
+    const filteredProducts = (data?.list ?? []).filter((product) => {
+      const productFieldValue = product[fieldName];
+
+      if (!productFieldValue) return false;
+
+      // Handle array fields (like color, content, finish, merchTags)
+      if (Array.isArray(productFieldValue)) {
+        return productFieldValue.some(
+          (item) =>
+            item &&
+            item.toString().trim().toLowerCase() === fieldValue.toLowerCase()
+        );
+      }
+      // Handle string fields (like category, design, structure, motif)
+      else if (typeof productFieldValue === "string") {
+        return (
+          productFieldValue.trim().toLowerCase() === fieldValue.toLowerCase()
+        );
+      }
+      // Handle other types (numbers, etc.)
+      else {
+        return (
+          productFieldValue.toString().toLowerCase() ===
+          fieldValue.toLowerCase()
+        );
+      }
+    });
+
+    // Apply pagination to filtered results
+    const startIndex = offset;
+    const endIndex = startIndex + limit;
+    const paginatedProducts = filteredProducts.slice(startIndex, endIndex);
+
+    res.json({
+      success: true,
+      products: paginatedProducts,
+      total: filteredProducts.length,
+      field: fieldName,
+      value: fieldValue,
+      pagination: {
+        page,
+        limit,
+        totalPages: Math.ceil(filteredProducts.length / limit),
+      },
+      debug: {
+        totalFetched: data?.list?.length || 0,
+        filteredCount: filteredProducts.length,
+        searchField: fieldName,
+        searchValue: fieldValue,
+      },
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({
+      success: false,
+      error: e.data || e.message,
+    });
+  }
+};
+
 module.exports = {
   getAllProducts,
   getProductById,
@@ -155,4 +301,6 @@ module.exports = {
   updateProduct,
   deleteProduct,
   getProductsByMerchTags,
+  getUniqueFieldValues,
+  getProductsByFieldValue,
 };
