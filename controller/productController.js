@@ -172,12 +172,12 @@ const getUniqueFieldValues = async (req, res) => {
     (data?.list ?? []).forEach((product) => {
       const fieldValue = product[fieldName];
 
-      if (fieldValue) {
+      if (fieldValue !== null && fieldValue !== undefined) {
         // Handle array fields (like color, content, finish)
         if (Array.isArray(fieldValue)) {
           fieldValue.forEach((item) => {
-            if (item && item.trim() !== "") {
-              uniqueValues.add(item.trim());
+            if (item && item.toString().trim() !== "") {
+              uniqueValues.add(item.toString().trim());
             }
           });
         }
@@ -188,10 +188,28 @@ const getUniqueFieldValues = async (req, res) => {
             uniqueValues.add(trimmedValue);
           }
         }
+        // Handle numeric fields (like purchaseMOQ, salesMOQ, gsm, ozs, purchasePrice, etc.)
+        else if (typeof fieldValue === "number") {
+          uniqueValues.add(fieldValue.toString());
+        }
+        // Handle boolean fields
+        else if (typeof fieldValue === "boolean") {
+          uniqueValues.add(fieldValue.toString());
+        }
       }
     });
 
-    const sortedValues = Array.from(uniqueValues).sort();
+    // Sort values - numeric values will be sorted as strings, but that's usually fine for display
+    const sortedValues = Array.from(uniqueValues).sort((a, b) => {
+      // Try to sort numerically if both values are numbers
+      const numA = parseFloat(a);
+      const numB = parseFloat(b);
+      if (!isNaN(numA) && !isNaN(numB)) {
+        return numA - numB;
+      }
+      // Otherwise sort alphabetically
+      return a.localeCompare(b);
+    });
 
     res.json({
       success: true,
