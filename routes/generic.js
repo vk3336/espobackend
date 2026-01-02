@@ -18,6 +18,9 @@ const createEntityRoutes = (entityName) => {
     controller.getRecordsByFieldValue
   );
 
+  // GET /:entity/search/:searchValue - Search products by keywords or productTitle
+  router.get("/search/:searchValue", controller.getBySearchProduct);
+
   // GET /:entity/:id - Get single record by ID
   router.get("/:id", controller.getRecordById);
 

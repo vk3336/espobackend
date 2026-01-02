@@ -363,6 +363,89 @@ const createEntityController = (entityName) => {
     }
   };
 
+  // Search products by keywords or productTitle
+  const getBySearchProduct = async (req, res) => {
+    try {
+      const { searchValue } = req.params;
+
+      if (!searchValue) {
+        return res.status(400).json({
+          success: false,
+          error: "searchValue parameter is required",
+        });
+      }
+
+      const page = Number(req.query.page || 1);
+      const limit = Number(req.query.limit || 20);
+      const offset = (page - 1) * limit;
+
+      // Get all products first
+      const data = await espoRequest(`/${entityName}`, {
+        query: {
+          maxSize: 200, // Get more records to search through
+          offset: 0,
+          orderBy: req.query.orderBy || "createdAt",
+          order: req.query.order || "desc",
+        },
+      });
+
+      // Filter products that match searchValue in keywords or productTitle
+      const filteredRecords = (data?.list ?? []).filter((record) => {
+        const keywords = record.keywords;
+        const productTitle = record.productTitle;
+        const searchTerm = searchValue.toLowerCase().trim();
+
+        // Check if searchValue matches keywords (array field)
+        let keywordsMatch = false;
+        if (keywords && Array.isArray(keywords)) {
+          keywordsMatch = keywords.some(
+            (keyword) =>
+              keyword && keyword.toString().toLowerCase().includes(searchTerm)
+          );
+        }
+
+        // Check if searchValue matches productTitle (string field)
+        let titleMatch = false;
+        if (productTitle && typeof productTitle === "string") {
+          titleMatch = productTitle.toLowerCase().includes(searchTerm);
+        }
+
+        return keywordsMatch || titleMatch;
+      });
+
+      // Apply pagination to filtered results
+      const startIndex = offset;
+      const endIndex = startIndex + limit;
+      let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+
+      // Always populate for product search results
+      const populateConfig = getEntityPopulateConfig(entityName);
+      paginatedRecords = await populateRelatedData(
+        paginatedRecords,
+        entityName,
+        populateConfig
+      );
+
+      res.json({
+        success: true,
+        data: paginatedRecords,
+        total: filteredRecords.length,
+        entity: entityName,
+        searchValue: searchValue,
+        pagination: {
+          page,
+          limit,
+          totalPages: Math.ceil(filteredRecords.length / limit),
+        },
+      });
+    } catch (e) {
+      res.status(e.status || 500).json({
+        success: false,
+        error: e.data || e.message,
+      });
+    }
+  };
+
   return {
     getAllRecords,
     getRecordById,
@@ -371,6 +454,7 @@ const createEntityController = (entityName) => {
     deleteRecord,
     getRecordsByFieldValue,
     getUniqueFieldValues,
+    getBySearchProduct,
   };
 };
 
