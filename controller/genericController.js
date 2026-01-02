@@ -1,5 +1,86 @@
 const { espoRequest } = require("./espoClient");
 
+// Helper function to populate related entity data
+const populateRelatedData = async (
+  records,
+  entityName,
+  populateFields = []
+) => {
+  console.log(
+    `[populateRelatedData] Called for ${entityName} with ${records.length} records and ${populateFields.length} populate fields`
+  );
+
+  if (
+    !Array.isArray(records) ||
+    records.length === 0 ||
+    populateFields.length === 0
+  ) {
+    console.log(
+      `[populateRelatedData] Early return - no records or populate fields`
+    );
+    return records;
+  }
+
+  const populatedRecords = await Promise.all(
+    records.map(async (record) => {
+      const populatedRecord = { ...record };
+
+      for (const field of populateFields) {
+        const { fieldName, relatedEntity, idField = `${fieldName}Id` } = field;
+
+        console.log(
+          `[populateRelatedData] Processing field: ${fieldName}, idField: ${idField}, relatedEntity: ${relatedEntity}, recordId: ${record[idField]}`
+        );
+
+        if (record[idField]) {
+          try {
+            const relatedData = await espoRequest(
+              `/${relatedEntity}/${record[idField]}`
+            );
+            populatedRecord[fieldName] = relatedData;
+            console.log(
+              `[populateRelatedData] Successfully populated ${fieldName} for record ${record.id}`
+            );
+          } catch (error) {
+            console.warn(
+              `Failed to populate ${fieldName} for record ${record.id}:`,
+              error.message
+            );
+            populatedRecord[fieldName] = null;
+          }
+        }
+      }
+
+      return populatedRecord;
+    })
+  );
+
+  return populatedRecords;
+};
+
+// Configuration for entity relationships
+const getEntityPopulateConfig = (entityName) => {
+  const configs = {
+    CProduct: [
+      {
+        fieldName: "collection",
+        relatedEntity: "CCollection",
+        idField: "collectionId",
+      },
+      { fieldName: "account", relatedEntity: "Account", idField: "accountId" },
+      { fieldName: "createdBy", relatedEntity: "User", idField: "createdById" },
+      {
+        fieldName: "modifiedBy",
+        relatedEntity: "User",
+        idField: "modifiedById",
+      },
+    ],
+    // Add more entity configurations as needed
+  };
+
+  return configs[entityName] || [];
+};
+
 // Generic controller factory that creates CRUD operations for any entity
 const createEntityController = (entityName) => {
   // Get all records
@@ -8,6 +89,11 @@ const createEntityController = (entityName) => {
       const page = Number(req.query.page || 1);
       const limit = Number(req.query.limit || 20);
       const offset = (page - 1) * limit;
+      // Always populate for CProduct, otherwise check query parameter
+      const populate =
+        entityName === "CProduct" ||
+        req.query.populate === "true" ||
+        req.query.populate === "1";
 
       const data = await espoRequest(`/${entityName}`, {
         query: {
@@ -19,9 +105,21 @@ const createEntityController = (entityName) => {
         },
       });
 
+      let records = data?.list ?? [];
+
+      // Populate related data if requested or if CProduct
+      if (populate) {
+        const populateConfig = getEntityPopulateConfig(entityName);
+        records = await populateRelatedData(
+          records,
+          entityName,
+          populateConfig
+        );
+      }
+
       res.json({
         success: true,
-        data: data?.list ?? [],
+        data: records,
         total: data?.total ?? 0,
         entity: entityName,
       });
@@ -35,8 +133,28 @@ const createEntityController = (entityName) => {
   // Get single record by ID
   const getRecordById = async (req, res) => {
     try {
+      // Always populate for CProduct, otherwise check query parameter
+      const populate =
+        entityName === "CProduct" ||
+        req.query.populate === "true" ||
+        req.query.populate === "1";
+
       const data = await espoRequest(`/${entityName}/${req.params.id}`);
-      res.json({ success: true, data, entity: entityName });
+
+      let record = data;
+
+      // Populate related data if requested or if CProduct
+      if (populate && record) {
+        const populateConfig = getEntityPopulateConfig(entityName);
+        const populatedRecords = await populateRelatedData(
+          [record],
+          entityName,
+          populateConfig
+        );
+        record = populatedRecords[0];
+      }
+
+      res.json({ success: true, data: record, entity: entityName });
     } catch (e) {
       res
         .status(e.status || 500)
@@ -103,6 +221,11 @@ const createEntityController = (entityName) => {
       const page = Number(req.query.page || 1);
       const limit = Number(req.query.limit || 20);
       const offset = (page - 1) * limit;
+      // Always populate for CProduct, otherwise check query parameter
+      const populate =
+        entityName === "CProduct" ||
+        req.query.populate === "true" ||
+        req.query.populate === "1";
 
       const data = await espoRequest(`/${entityName}`, {
         query: {
@@ -139,7 +262,17 @@ const createEntityController = (entityName) => {
 
       const startIndex = offset;
       const endIndex = startIndex + limit;
-      const paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+      let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+
+      // Populate related data if requested or if CProduct
+      if (populate) {
+        const populateConfig = getEntityPopulateConfig(entityName);
+        paginatedRecords = await populateRelatedData(
+          paginatedRecords,
+          entityName,
+          populateConfig
+        );
+      }
 
       res.json({
         success: true,
