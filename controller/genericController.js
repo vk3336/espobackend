@@ -120,7 +120,7 @@ const createEntityController = (entityName) => {
       res.json({
         success: true,
         data: records,
-        total: data?.total ?? 0,
+        total: Math.max(0, data?.total ?? 0), // Ensure total is not negative
         entity: entityName,
       });
     } catch (e) {
@@ -208,9 +208,9 @@ const createEntityController = (entityName) => {
 
   // Get records by field value (for array fields like tags)
   const getRecordsByFieldValue = async (req, res) => {
-    try {
-      const { fieldName, fieldValue } = req.params;
+    const { fieldName, fieldValue } = req.params;
 
+    try {
       if (!fieldName || !fieldValue) {
         return res.status(400).json({
           success: false,
@@ -227,14 +227,23 @@ const createEntityController = (entityName) => {
         req.query.populate === "true" ||
         req.query.populate === "1";
 
+      const queryParams = {
+        maxSize: 100,
+        offset: 0,
+      };
+
+      // Only add orderBy if explicitly provided, avoid defaults for special entities like CSiteSettings
+      if (req.query.orderBy) {
+        queryParams.orderBy = req.query.orderBy;
+        queryParams.order = req.query.order || "desc";
+      }
+
+      if (req.query.select) {
+        queryParams.select = req.query.select;
+      }
+
       const data = await espoRequest(`/${entityName}`, {
-        query: {
-          maxSize: 100,
-          offset: 0,
-          orderBy: req.query.orderBy || "createdAt",
-          order: req.query.order || "desc",
-          select: req.query.select,
-        },
+        query: queryParams,
       });
 
       const filteredRecords = (data?.list ?? []).filter((record) => {
@@ -288,9 +297,18 @@ const createEntityController = (entityName) => {
         },
       });
     } catch (e) {
+      console.error(
+        `[getRecordsByFieldValue] Error for ${entityName}/${fieldName}/${fieldValue}:`,
+        {
+          status: e.status,
+          message: e.message,
+          data: e.data,
+        }
+      );
       res.status(e.status || 500).json({
         success: false,
         error: e.data || e.message,
+        details: e.data,
       });
     }
   };

@@ -9,17 +9,17 @@ const createEntityRoutes = (entityName) => {
   // GET /:entity - Get all records
   router.get("/", controller.getAllRecords);
 
-  // GET /:entity/fieldname/:fieldName - Get unique values for specified field
-  router.get("/fieldname/:fieldName", controller.getUniqueFieldValues);
+  // GET /:entity/search/:searchValue - Search products by keywords or productTitle
+  router.get("/search/:searchValue", controller.getBySearchProduct);
 
-  // GET /:entity/fieldname/:fieldName/:fieldValue - Get records filtered by field and value
+  // GET /:entity/fieldname/:fieldName/:fieldValue - Get records filtered by field and value (MORE SPECIFIC - must come first)
   router.get(
     "/fieldname/:fieldName/:fieldValue",
     controller.getRecordsByFieldValue
   );
 
-  // GET /:entity/search/:searchValue - Search products by keywords or productTitle
-  router.get("/search/:searchValue", controller.getBySearchProduct);
+  // GET /:entity/fieldname/:fieldName - Get unique values for specified field (LESS SPECIFIC - comes after)
+  router.get("/fieldname/:fieldName", controller.getUniqueFieldValues);
 
   // GET /:entity/:id - Get single record by ID
   router.get("/:id", controller.getRecordById);
