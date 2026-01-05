@@ -6,10 +6,15 @@ const { createEntityRoutes } = require("./routes/generic");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// CORS configuration - support multiple origins
+const corsOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(",").map((origin) => origin.trim())
+  : ["http://localhost:3000"]; // fallback to localhost:3000
+
 // Middleware
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN,
+    origin: corsOrigins,
     credentials: true,
   })
 );
