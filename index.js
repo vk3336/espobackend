@@ -1,10 +1,21 @@
-require("dotenv").config();
+// Only load .env locally (Vercel provides env vars without .env)
+if (process.env.NODE_ENV !== "production") {
+  require("dotenv").config();
+}
+
 const express = require("express");
 const cors = require("cors");
 const { createEntityRoutes } = require("./routes/generic");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+/**
+ * IMPORTANT for caching:
+ * Disable ETag so browsers don't keep forcing 304 revalidations for big JSON.
+ * We want Vercel CDN caching to do the heavy lifting.
+ */
+app.set("etag", false);
 
 // CORS configuration - support multiple origins
 const corsOrigins = process.env.CORS_ORIGIN
