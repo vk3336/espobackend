@@ -1,6 +1,6 @@
 const { espoRequest } = require("./espoClient");
 
-// Helper function to populate related entity data
+// Helper function to populate related entity data with controlled concurrency
 const populateRelatedData = async (
   records,
   entityName,
@@ -21,39 +21,60 @@ const populateRelatedData = async (
     return records;
   }
 
-  const populatedRecords = await Promise.all(
-    records.map(async (record) => {
-      const populatedRecord = { ...record };
+  // Process records in batches to avoid overwhelming the server
+  const batchSize = parseInt(process.env.POPULATE_BATCH_SIZE) || 3;
+  const batchDelay = parseInt(process.env.POPULATE_BATCH_DELAY_MS) || 100;
+  const populatedRecords = [];
 
-      for (const field of populateFields) {
-        const { fieldName, relatedEntity, idField = `${fieldName}Id` } = field;
+  for (let i = 0; i < records.length; i += batchSize) {
+    const batch = records.slice(i, i + batchSize);
 
-        console.log(
-          `[populateRelatedData] Processing field: ${fieldName}, idField: ${idField}, relatedEntity: ${relatedEntity}, recordId: ${record[idField]}`
-        );
+    const batchResults = await Promise.all(
+      batch.map(async (record) => {
+        const populatedRecord = { ...record };
 
-        if (record[idField]) {
-          try {
-            const relatedData = await espoRequest(
-              `/${relatedEntity}/${record[idField]}`
-            );
-            populatedRecord[fieldName] = relatedData;
-            console.log(
-              `[populateRelatedData] Successfully populated ${fieldName} for record ${record.id}`
-            );
-          } catch (error) {
-            console.warn(
-              `Failed to populate ${fieldName} for record ${record.id}:`,
-              error.message
-            );
-            populatedRecord[fieldName] = null;
+        // Process populate fields sequentially for each record to avoid too many concurrent requests
+        for (const field of populateFields) {
+          const {
+            fieldName,
+            relatedEntity,
+            idField = `${fieldName}Id`,
+          } = field;
+
+          console.log(
+            `[populateRelatedData] Processing field: ${fieldName}, idField: ${idField}, relatedEntity: ${relatedEntity}, recordId: ${record[idField]}`
+          );
+
+          if (record[idField]) {
+            try {
+              const relatedData = await espoRequest(
+                `/${relatedEntity}/${record[idField]}`
+              );
+              populatedRecord[fieldName] = relatedData;
+              console.log(
+                `[populateRelatedData] Successfully populated ${fieldName} for record ${record.id}`
+              );
+            } catch (error) {
+              console.warn(
+                `Failed to populate ${fieldName} for record ${record.id}:`,
+                error.message
+              );
+              populatedRecord[fieldName] = null;
+            }
           }
         }
-      }
 
-      return populatedRecord;
-    })
-  );
+        return populatedRecord;
+      })
+    );
+
+    populatedRecords.push(...batchResults);
+
+    // Small delay between batches to prevent overwhelming the server
+    if (i + batchSize < records.length) {
+      await new Promise((resolve) => setTimeout(resolve, batchDelay));
+    }
+  }
 
   return populatedRecords;
 };
