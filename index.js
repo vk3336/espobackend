@@ -92,6 +92,8 @@ app.get("/", (req, res) => {
       "GET /:base/:entity/fieldname/:fieldName": "Get unique field values",
       "GET /:base/:entity/fieldname/:fieldName/:fieldValue":
         "Get records by field value",
+        "GET /:entity/search/:searchValue":"Search products by keywords or productTitle",
+        
     },
   });
 });
