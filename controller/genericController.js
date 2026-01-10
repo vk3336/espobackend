@@ -116,6 +116,57 @@ const createEntityController = (entityName) => {
         req.query.populate === "true" ||
         req.query.populate === "1";
 
+      // Special filtering for product entity - filter by merchTags containing "ecatalogue"
+      if (
+        entityName.toLowerCase() === "product" ||
+        entityName.toLowerCase() === "cproduct"
+      ) {
+        // Get more records to filter through
+        const data = await espoRequest(`/${entityName}`, {
+          query: {
+            maxSize: 200, // Get more records to filter through
+            offset: 0,
+            orderBy: req.query.orderBy,
+            order: req.query.order,
+            select: req.query.select,
+          },
+        });
+
+        // Filter products that have "ecatalogue" in merchTags
+        const filteredRecords = (data?.list ?? []).filter((record) => {
+          const merchTags = record.merchTags;
+          if (!merchTags || !Array.isArray(merchTags)) return false;
+
+          return merchTags.some(
+            (tag) => tag && tag.toString().toLowerCase() === "ecatalogue"
+          );
+        });
+
+        // Apply pagination to filtered results
+        const startIndex = offset;
+        const endIndex = startIndex + limit;
+        let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+
+        // Populate related data if requested or if CProduct
+        if (populate) {
+          const populateConfig = getEntityPopulateConfig(entityName);
+          paginatedRecords = await populateRelatedData(
+            paginatedRecords,
+            entityName,
+            populateConfig
+          );
+        }
+
+        return res.json({
+          success: true,
+          data: paginatedRecords,
+          total: filteredRecords.length,
+          entity: entityName,
+          filtered: "merchTags contains ecatalogue",
+        });
+      }
+
+      // Default behavior for all other entities
       const data = await espoRequest(`/${entityName}`, {
         query: {
           maxSize: limit,
