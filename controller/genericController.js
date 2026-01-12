@@ -1,13 +1,14 @@
 const { espoRequest } = require("./espoClient");
+const { attachCollections, attachRelatedEntities } = require("../utils/espo");
 
-// Helper function to populate related entity data with controlled concurrency
-const populateRelatedData = async (
+// NEW: Bulk populate using EspoCRM's "in" operator - much faster!
+const populateRelatedDataBulk = async (
   records,
   entityName,
   populateFields = []
 ) => {
   console.log(
-    `[populateRelatedData] Called for ${entityName} with ${records.length} records and ${populateFields.length} populate fields`
+    `[populateRelatedDataBulk] Called for ${entityName} with ${records.length} records`
   );
 
   if (
@@ -15,68 +16,62 @@ const populateRelatedData = async (
     records.length === 0 ||
     populateFields.length === 0
   ) {
-    console.log(
-      `[populateRelatedData] Early return - no records or populate fields`
-    );
     return records;
   }
 
-  // Process records in batches to avoid overwhelming the server
-  const batchSize = parseInt(process.env.POPULATE_BATCH_SIZE) || 3;
-  const batchDelay = parseInt(process.env.POPULATE_BATCH_DELAY_MS) || 100;
-  const populatedRecords = [];
+  // Separate collection from other entities for optimized handling
+  const collectionConfig = populateFields.find(
+    (f) => f.fieldName === "collection"
+  );
+  const otherConfigs = populateFields.filter(
+    (f) => f.fieldName !== "collection"
+  );
 
-  for (let i = 0; i < records.length; i += batchSize) {
-    const batch = records.slice(i, i + batchSize);
+  let result = [...records];
 
-    const batchResults = await Promise.all(
-      batch.map(async (record) => {
-        const populatedRecord = { ...record };
-
-        // Process populate fields sequentially for each record to avoid too many concurrent requests
-        for (const field of populateFields) {
-          const {
-            fieldName,
-            relatedEntity,
-            idField = `${fieldName}Id`,
-          } = field;
-
-          console.log(
-            `[populateRelatedData] Processing field: ${fieldName}, idField: ${idField}, relatedEntity: ${relatedEntity}, recordId: ${record[idField]}`
-          );
-
-          if (record[idField]) {
-            try {
-              const relatedData = await espoRequest(
-                `/${relatedEntity}/${record[idField]}`
-              );
-              populatedRecord[fieldName] = relatedData;
-              console.log(
-                `[populateRelatedData] Successfully populated ${fieldName} for record ${record.id}`
-              );
-            } catch (error) {
-              console.warn(
-                `Failed to populate ${fieldName} for record ${record.id}:`,
-                error.message
-              );
-              populatedRecord[fieldName] = null;
-            }
-          }
-        }
-
-        return populatedRecord;
-      })
-    );
-
-    populatedRecords.push(...batchResults);
-
-    // Small delay between batches to prevent overwhelming the server
-    if (i + batchSize < records.length) {
-      await new Promise((resolve) => setTimeout(resolve, batchDelay));
-    }
+  // Handle collections with specialized function
+  if (collectionConfig) {
+    result = await attachCollections(result, {
+      idField: collectionConfig.idField || "collectionId",
+      targetField: "collection",
+      collectionEntity: collectionConfig.relatedEntity || "CCollection",
+      select: ["id", "name", "slug"], // Add fields you need
+    });
   }
 
-  return populatedRecords;
+  // Handle other entities (accounts, users, etc.) in bulk
+  if (otherConfigs.length > 0) {
+    const entityConfigs = otherConfigs.map((config) => ({
+      idField: config.idField || `${config.fieldName}Id`,
+      targetField: config.fieldName,
+      entityType: config.relatedEntity,
+      select:
+        config.relatedEntity === "User"
+          ? ["id", "name", "userName", "emailAddress"]
+          : ["id", "name"],
+    }));
+
+    result = await attachRelatedEntities(result, entityConfigs);
+  }
+
+  console.log(
+    `[populateRelatedDataBulk] Successfully populated ${records.length} records`
+  );
+  return result;
+};
+
+// LEGACY: Keep old function for backward compatibility (but mark as deprecated)
+const populateRelatedData = async (
+  records,
+  entityName,
+  populateFields = []
+) => {
+  console.warn(
+    "[DEPRECATED] Using old populateRelatedData - consider switching to populateRelatedDataBulk"
+  );
+
+  // For now, just call the new bulk function
+  return populateRelatedDataBulk(records, entityName, populateFields);
 };
 
 // Configuration for entity relationships
@@ -150,7 +145,7 @@ const createEntityController = (entityName) => {
         // Populate related data if requested or if CProduct
         if (populate) {
           const populateConfig = getEntityPopulateConfig(entityName);
-          paginatedRecords = await populateRelatedData(
+          paginatedRecords = await populateRelatedDataBulk(
             paginatedRecords,
             entityName,
             populateConfig
@@ -182,7 +177,7 @@ const createEntityController = (entityName) => {
       // Populate related data if requested or if CProduct
       if (populate) {
         const populateConfig = getEntityPopulateConfig(entityName);
-        records = await populateRelatedData(
+        records = await populateRelatedDataBulk(
           records,
           entityName,
           populateConfig
@@ -218,7 +213,7 @@ const createEntityController = (entityName) => {
       // Populate related data if requested or if CProduct
       if (populate && record) {
         const populateConfig = getEntityPopulateConfig(entityName);
-        const populatedRecords = await populateRelatedData(
+        const populatedRecords = await populateRelatedDataBulk(
           [record],
           entityName,
           populateConfig
@@ -348,7 +343,7 @@ const createEntityController = (entityName) => {
       // Populate related data if requested or if CProduct
       if (populate) {
         const populateConfig = getEntityPopulateConfig(entityName);
-        paginatedRecords = await populateRelatedData(
+        paginatedRecords = await populateRelatedDataBulk(
           paginatedRecords,
           entityName,
           populateConfig
@@ -510,7 +505,7 @@ const createEntityController = (entityName) => {
 
       // Always populate for product search results
       const populateConfig = getEntityPopulateConfig(entityName);
-      paginatedRecords = await populateRelatedData(
+      paginatedRecords = await populateRelatedDataBulk(
         paginatedRecords,
         entityName,
         populateConfig
