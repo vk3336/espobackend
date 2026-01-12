@@ -464,69 +464,175 @@ const createEntityController = (entityName) => {
       const limit = Number(req.query.limit || 20);
       const offset = (page - 1) * limit;
 
-      // Get all products first
-      const data = await espoRequest(`/${entityName}`, {
-        query: {
-          maxSize: 200, // Get more records to search through
-          offset: 0,
-          orderBy: req.query.orderBy || "createdAt",
-          order: req.query.order || "desc",
-        },
-      });
-
-      // Filter products that match searchValue in keywords or productTitle
-      const filteredRecords = (data?.list ?? []).filter((record) => {
-        const keywords = record.keywords;
-        const productTitle = record.productTitle;
-        const searchTerm = searchValue.toLowerCase().trim();
-
-        // Check if searchValue matches keywords (array field)
-        let keywordsMatch = false;
-        if (keywords && Array.isArray(keywords)) {
-          keywordsMatch = keywords.some(
-            (keyword) =>
-              keyword && keyword.toString().toLowerCase().includes(searchTerm)
-          );
-        }
-
-        // Check if searchValue matches productTitle (string field)
-        let titleMatch = false;
-        if (productTitle && typeof productTitle === "string") {
-          titleMatch = productTitle.toLowerCase().includes(searchTerm);
-        }
-
-        return keywordsMatch || titleMatch;
-      });
-
-      // Apply pagination to filtered results
-      const startIndex = offset;
-      const endIndex = startIndex + limit;
-      let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
-
-      // Always populate for product search results
-      const populateConfig = getEntityPopulateConfig(entityName);
-      paginatedRecords = await populateRelatedDataBulk(
-        paginatedRecords,
-        entityName,
-        populateConfig
+      console.log(
+        `[getBySearchProduct] Searching for: "${searchValue}" in entity: ${entityName}`
       );
 
-      res.json({
-        success: true,
-        data: paginatedRecords,
-        total: filteredRecords.length,
-        entity: entityName,
-        searchValue: searchValue,
-        pagination: {
-          page,
-          limit,
-          totalPages: Math.ceil(filteredRecords.length / limit),
-        },
-      });
+      // Use the same approach as getAllRecords for CProduct
+      if (
+        entityName.toLowerCase() === "product" ||
+        entityName.toLowerCase() === "cproduct"
+      ) {
+        // Get more records to filter through - same as getAllRecords
+        const data = await espoRequest(`/${entityName}`, {
+          query: {
+            maxSize: 200,
+            offset: 0,
+            orderBy: req.query.orderBy,
+            order: req.query.order,
+            select: req.query.select,
+          },
+        });
+
+        // Filter products that have "ecatalogue" in merchTags (same as getAllRecords)
+        const ecatalogueProducts = (data?.list ?? []).filter((record) => {
+          const merchTags = record.merchTags;
+          if (!merchTags || !Array.isArray(merchTags)) return false;
+          return merchTags.some(
+            (tag) => tag && tag.toString().toLowerCase() === "ecatalogue"
+          );
+        });
+
+        // Now filter by search term within the ecatalogue products
+        const filteredRecords = ecatalogueProducts.filter((record) => {
+          const keywords = record.keywords;
+          const productTitle = record.productTitle;
+          const name = record.name;
+          const searchTerm = searchValue.toLowerCase().trim();
+
+          // Check if searchValue matches keywords (array field)
+          let keywordsMatch = false;
+          if (keywords && Array.isArray(keywords)) {
+            keywordsMatch = keywords.some(
+              (keyword) =>
+                keyword && keyword.toString().toLowerCase().includes(searchTerm)
+            );
+          }
+
+          // Check if searchValue matches productTitle (string field)
+          let titleMatch = false;
+          if (productTitle && typeof productTitle === "string") {
+            titleMatch = productTitle.toLowerCase().includes(searchTerm);
+          }
+
+          // Check if searchValue matches name (string field)
+          let nameMatch = false;
+          if (name && typeof name === "string") {
+            nameMatch = name.toLowerCase().includes(searchTerm);
+          }
+
+          return keywordsMatch || titleMatch || nameMatch;
+        });
+
+        // Apply pagination to filtered results
+        const startIndex = offset;
+        const endIndex = startIndex + limit;
+        let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+
+        // Always populate for product search results
+        const populateConfig = getEntityPopulateConfig(entityName);
+        paginatedRecords = await populateRelatedDataBulk(
+          paginatedRecords,
+          entityName,
+          populateConfig
+        );
+
+        return res.json({
+          success: true,
+          data: paginatedRecords,
+          total: filteredRecords.length,
+          entity: entityName,
+          searchValue: searchValue,
+          filtered: "merchTags contains ecatalogue AND search term",
+          pagination: {
+            page,
+            limit,
+            totalPages: Math.ceil(filteredRecords.length / limit),
+          },
+        });
+      } else {
+        // For other entities, use the original approach
+        const data = await espoRequest(`/${entityName}`, {
+          query: {
+            maxSize: 200,
+            offset: 0,
+            orderBy: req.query.orderBy || "createdAt",
+            order: req.query.order || "desc",
+          },
+        });
+
+        // Filter products that match searchValue in keywords or productTitle
+        const filteredRecords = (data?.list ?? []).filter((record) => {
+          const keywords = record.keywords;
+          const productTitle = record.productTitle;
+          const name = record.name;
+          const searchTerm = searchValue.toLowerCase().trim();
+
+          // Check if searchValue matches keywords (array field)
+          let keywordsMatch = false;
+          if (keywords && Array.isArray(keywords)) {
+            keywordsMatch = keywords.some(
+              (keyword) =>
+                keyword && keyword.toString().toLowerCase().includes(searchTerm)
+            );
+          }
+
+          // Check if searchValue matches productTitle (string field)
+          let titleMatch = false;
+          if (productTitle && typeof productTitle === "string") {
+            titleMatch = productTitle.toLowerCase().includes(searchTerm);
+          }
+
+          // Check if searchValue matches name (string field)
+          let nameMatch = false;
+          if (name && typeof name === "string") {
+            nameMatch = name.toLowerCase().includes(searchTerm);
+          }
+
+          return keywordsMatch || titleMatch || nameMatch;
+        });
+
+        // Apply pagination to filtered results
+        const startIndex = offset;
+        const endIndex = startIndex + limit;
+        let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+
+        // Always populate for product search results
+        const populateConfig = getEntityPopulateConfig(entityName);
+        paginatedRecords = await populateRelatedDataBulk(
+          paginatedRecords,
+          entityName,
+          populateConfig
+        );
+
+        res.json({
+          success: true,
+          data: paginatedRecords,
+          total: filteredRecords.length,
+          entity: entityName,
+          searchValue: searchValue,
+          pagination: {
+            page,
+            limit,
+            totalPages: Math.ceil(filteredRecords.length / limit),
+          },
+        });
+      }
     } catch (e) {
+      console.error(
+        `[getBySearchProduct] Error searching for "${req.params.searchValue}" in ${entityName}:`,
+        {
+          status: e.status,
+          message: e.message,
+          data: e.data,
+          url: e.url || "unknown",
+        }
+      );
       res.status(e.status || 500).json({
         success: false,
         error: e.data || e.message,
+        searchValue: req.params.searchValue,
+        entity: entityName,
       });
     }
   };

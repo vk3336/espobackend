@@ -70,6 +70,9 @@ async function espoRequest(path, { method = "GET", body, query } = {}) {
       }
     }
 
+    console.log(`[espoRequest] Making request to: ${url.toString()}`);
+    console.log(`[espoRequest] Method: ${method}, Query:`, query);
+
     // Create AbortController for timeout
     const controller = new AbortController();
     const timeoutMs = parseInt(process.env.REQUEST_TIMEOUT_MS) || 30000;
@@ -98,9 +101,14 @@ async function espoRequest(path, { method = "GET", body, query } = {}) {
       }
 
       if (!res.ok) {
+        console.error(
+          `[espoRequest] HTTP ${res.status} error from ${url.toString()}:`,
+          data
+        );
         const err = new Error("EspoCRM request failed");
         err.status = res.status;
         err.data = data;
+        err.url = url.toString();
         throw err;
       }
 
