@@ -92,8 +92,8 @@ app.get("/", (req, res) => {
       "GET /:base/:entity/fieldname/:fieldName": "Get unique field values",
       "GET /:base/:entity/fieldname/:fieldName/:fieldValue":
         "Get records by field value",
-        "GET /:entity/search/:searchValue":"Search products by keywords or productTitle",
-        
+      "GET /:entity/search/:searchValue":
+        "Search products by keywords or productTitle",
     },
   });
 });
@@ -153,16 +153,22 @@ app.use((req, res) => {
   res.status(404).json({ success: false, error: "Route not found" });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port http://localhost:${PORT}`);
-  console.log(`EspoCRM Base URL: ${process.env.ESPO_BASE_URL}`);
-  console.log(`Configured Entities: ${entities.join(", ")}`);
-  console.log(`Available API routes:`);
+// For serverless deployment (Vercel, Netlify, etc.)
+module.exports = app;
 
-  apiBaseNames.forEach((baseName) => {
-    entities.forEach((entity) => {
-      const entityRoute = entity.toLowerCase().replace(/^c/, "");
-      console.log(`  - /${baseName}/${entityRoute} (${entity})`);
+// For local development only
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port http://localhost:${PORT}`);
+    console.log(`EspoCRM Base URL: ${process.env.ESPO_BASE_URL}`);
+    console.log(`Configured Entities: ${entities.join(", ")}`);
+    console.log(`Available API routes:`);
+
+    apiBaseNames.forEach((baseName) => {
+      entities.forEach((entity) => {
+        const entityRoute = entity.toLowerCase().replace(/^c/, "");
+        console.log(`  - /${baseName}/${entityRoute} (${entity})`);
+      });
     });
   });
-});
+}
