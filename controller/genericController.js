@@ -35,7 +35,7 @@ const populateRelatedDataBulk = async (
       idField: collectionConfig.idField || "collectionId",
       targetField: "collection",
       collectionEntity: collectionConfig.relatedEntity || "CCollection",
-      select: ["id", "name", "slug"], // Add fields you need
+      select: ["id", "name", "slug","collectionImage1CloudUrl","altTextCollectionImage1","collectionvideoURL","collectionaltTextVideo"], // Add fields you need
     });
   }
 
