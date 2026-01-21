@@ -100,102 +100,178 @@ const getEntityPopulateConfig = (entityName) => {
 // Generic controller factory that creates CRUD operations for any entity
 const createEntityController = (entityName) => {
   // Get all records
-  const getAllRecords = async (req, res) => {
-    try {
-      const page = Number(req.query.page || 1);
-      const limit = Number(req.query.limit || 20);
-      const offset = (page - 1) * limit;
-      // Always populate for CProduct, otherwise check query parameter
-      const populate =
-        entityName === "CProduct" ||
-        req.query.populate === "true" ||
-        req.query.populate === "1";
+ const getAllRecords = async (req, res) => {
+  try {
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 20);
+    const offset = (page - 1) * limit;
+    // Always populate for CProduct, otherwise check query parameter
+    const populate =
+      entityName === "CProduct" ||
+      req.query.populate === "true" ||
+      req.query.populate === "1";
 
-      // Special filtering for product entity - filter by merchTags containing "ecatalogue"
-      if (
-        entityName.toLowerCase() === "product" ||
-        entityName.toLowerCase() === "cproduct"
-      ) {
-        // Get more records to filter through
-        const data = await espoRequest(`/${entityName}`, {
-          query: {
-            maxSize: 200, // Get more records to filter through
-            offset: 0,
-            orderBy: req.query.orderBy,
-            order: req.query.order,
-            select: req.query.select,
-          },
-        });
-
-        // Filter products that have "ecatalogue" in merchTags
-        const filteredRecords = (data?.list ?? []).filter((record) => {
-          const merchTags = record.merchTags;
-          if (!merchTags || !Array.isArray(merchTags)) return false;
-
-          return merchTags.some(
-            (tag) => tag && tag.toString().toLowerCase() === "ecatalogue"
-          );
-        });
-
-        // Apply pagination to filtered results
-        const startIndex = offset;
-        const endIndex = startIndex + limit;
-        let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
-
-        // Populate related data if requested or if CProduct
-        if (populate) {
-          const populateConfig = getEntityPopulateConfig(entityName);
-          paginatedRecords = await populateRelatedDataBulk(
-            paginatedRecords,
-            entityName,
-            populateConfig
-          );
-        }
-
-        return res.json({
-          success: true,
-          data: paginatedRecords,
-          total: filteredRecords.length,
-          entity: entityName,
-          filtered: "merchTags contains ecatalogue",
-        });
-      }
-
-      // Default behavior for all other entities
+    // Special filtering for product entity - filter by merchTags containing "ecatalogue"
+    if (
+      entityName.toLowerCase() === "product" ||
+      entityName.toLowerCase() === "cproduct"
+    ) {
+      // Get more records to filter through
       const data = await espoRequest(`/${entityName}`, {
         query: {
-          maxSize: limit,
-          offset,
+          maxSize: 200, // Get more records to filter through
+          offset: 0,
           orderBy: req.query.orderBy,
           order: req.query.order,
           select: req.query.select,
         },
       });
 
-      let records = data?.list ?? [];
+      // Filter products that have "ecatalogue" in merchTags
+      const filteredRecords = (data?.list ?? []).filter((record) => {
+        const merchTags = record.merchTags;
+        if (!merchTags || !Array.isArray(merchTags)) return false;
+
+        return merchTags.some(
+          (tag) => tag && tag.toString().toLowerCase() === "ecatalogue"
+        );
+      });
+
+      // Apply pagination to filtered results
+      const startIndex = offset;
+      const endIndex = startIndex + limit;
+      let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
 
       // Populate related data if requested or if CProduct
       if (populate) {
         const populateConfig = getEntityPopulateConfig(entityName);
-        records = await populateRelatedDataBulk(
-          records,
+        paginatedRecords = await populateRelatedDataBulk(
+          paginatedRecords,
           entityName,
           populateConfig
         );
       }
 
-      res.json({
+      return res.json({
         success: true,
-        data: records,
-        total: Math.max(0, data?.total ?? 0), // Ensure total is not negative
+        data: paginatedRecords,
+        total: filteredRecords.length,
         entity: entityName,
+        filtered: "merchTags contains ecatalogue",
       });
-    } catch (e) {
-      res
-        .status(e.status || 500)
-        .json({ success: false, error: e.data || e.message });
     }
-  };
+
+    // ✅ NEW: Special filtering for blog entity
+    // condition:
+    // 1) status must be Approved
+    // 2) publishedAt must be <= now (past or current). future dates and null must not come
+    if (
+      entityName.toLowerCase() === "blog" ||
+      entityName.toLowerCase() === "cblog"
+    ) {
+      // Get more records to filter through (same approach like product)
+      const data = await espoRequest(`/${entityName}`, {
+        query: {
+          maxSize: 200,
+          offset: 0,
+          orderBy: req.query.orderBy,
+          order: req.query.order,
+          select: req.query.select, // keep as-is (no change to your logic)
+        },
+      });
+
+      const now = new Date();
+
+      const parseEspoDate = (v) => {
+        if (!v) return null;
+
+        // If it is already Date
+        if (v instanceof Date) return v;
+
+        const s = String(v).trim();
+        if (!s) return null;
+
+        // Handles:
+        // "YYYY-MM-DD"
+        // "YYYY-MM-DD HH:mm:ss"
+        // ISO strings
+        let iso = s.includes("T") ? s : s.replace(" ", "T");
+        if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) iso = `${iso}T00:00:00`;
+
+        // If timezone not provided, treat as UTC to avoid server-local surprises
+        if (!/[zZ]$/.test(iso) && !/[+-]\d{2}:\d{2}$/.test(iso)) iso += "Z";
+
+        const d = new Date(iso);
+        return Number.isNaN(d.getTime()) ? null : d;
+      };
+
+      // Filter blogs: status Approved AND publishedAt <= now
+      const filteredRecords = (data?.list ?? []).filter((record) => {
+        const status = (record.status ?? "").toString().toLowerCase();
+        if (status !== "approved") return false;
+
+        const pub = parseEspoDate(record.publishedAt);
+        if (!pub) return false; // remove null / invalid
+
+        return pub.getTime() <= now.getTime(); // past or current only
+      });
+
+      // Apply pagination to filtered results
+      const startIndex = offset;
+      const endIndex = startIndex + limit;
+      let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+
+      // Populate related data if requested
+      if (populate) {
+        const populateConfig = getEntityPopulateConfig(entityName);
+        paginatedRecords = await populateRelatedDataBulk(
+          paginatedRecords,
+          entityName,
+          populateConfig
+        );
+      }
+
+      return res.json({
+        success: true,
+        data: paginatedRecords,
+        total: filteredRecords.length,
+        entity: entityName,
+        filtered: "status=Approved AND publishedAt<=now",
+      });
+    }
+
+    // Default behavior for all other entities
+    const data = await espoRequest(`/${entityName}`, {
+      query: {
+        maxSize: limit,
+        offset,
+        orderBy: req.query.orderBy,
+        order: req.query.order,
+        select: req.query.select,
+      },
+    });
+
+    let records = data?.list ?? [];
+
+    // Populate related data if requested or if CProduct
+    if (populate) {
+      const populateConfig = getEntityPopulateConfig(entityName);
+      records = await populateRelatedDataBulk(records, entityName, populateConfig);
+    }
+
+    res.json({
+      success: true,
+      data: records,
+      total: Math.max(0, data?.total ?? 0), // Ensure total is not negative
+      entity: entityName,
+    });
+  } catch (e) {
+    res
+      .status(e.status || 500)
+      .json({ success: false, error: e.data || e.message });
+  }
+};
+
 
   // Get single record by ID
   const getRecordById = async (req, res) => {
