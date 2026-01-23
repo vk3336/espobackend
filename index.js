@@ -6,6 +6,7 @@ if (process.env.NODE_ENV !== "production") {
 const express = require("express");
 const cors = require("cors");
 const { createEntityRoutes } = require("./routes/generic");
+const chatRoutes = require("./routes/chat");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -65,6 +66,9 @@ apiBaseNames.forEach((baseName) => {
     const entityRoute = entity.toLowerCase().replace(/^c/, ""); // Remove 'C' prefix and lowercase
     app.use(`/${baseName}/${entityRoute}`, createEntityRoutes(entity));
   });
+
+  // Chat assistant endpoint(s)
+  app.use(`/${baseName}/chat`, chatRoutes());
 });
 
 // Basic health check route
@@ -77,6 +81,10 @@ app.get("/", (req, res) => {
       const entityRoute = entity.toLowerCase().replace(/^c/, "");
       availableRoutes.push(`/${baseName}/${entityRoute}`);
     });
+
+    // Add chat routes
+    availableRoutes.push(`/${baseName}/chat/health`);
+    availableRoutes.push(`/${baseName}/chat/message`);
   });
 
   res.json({
