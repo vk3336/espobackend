@@ -8,12 +8,8 @@ const { espoRequest } = require("./espoClient");
 const SESSION_STORE = globalThis.__AGE_CHAT_SESSIONS || new Map();
 globalThis.__AGE_CHAT_SESSIONS = SESSION_STORE;
 
-/** LeadCapture POST URL (no extra env, per your request) */
-const LEAD_CAPTURE_POST_URL =
-  "https://espo.egport.com/api/v1/LeadCapture/a4624c9bb58b8b755e3d94f1a25fc9be";
-
-/** LeadCapture entity name for PUT updates (standard Espo endpoint) */
-const LEAD_CAPTURE_ENTITY = "LeadCapture";
+/** We will store leads in Espo "Lead" entity */
+const LEAD_ENTITY = "Lead";
 
 function nowIso() {
   return new Date().toISOString();
@@ -182,13 +178,40 @@ async function openaiText(system, user, maxTokens = 420) {
 }
 
 /* ------------------------------ Contact capture helpers ------------------------------ */
-function digitsOnlyPhone(s) {
-  const raw = cleanStr(s);
+
+/**
+ * Normalize phone into something Espo validator accepts (often E.164).
+ * DEFAULT_PHONE_COUNTRY_CODE example: +91
+ */
+function normalizePhoneForEspo(input) {
+  const raw = cleanStr(input);
   if (!raw) return "";
-  const hasPlus = raw.trim().startsWith("+");
+
+  const defaultCC = cleanStr(process.env.DEFAULT_PHONE_COUNTRY_CODE || "+91"); // set in .env
+  const startsPlus = raw.startsWith("+");
   const digits = raw.replace(/[^\d]/g, "");
   if (!digits) return "";
-  return hasPlus ? `+${digits}` : digits;
+
+  // if already +, keep +digits
+  if (startsPlus) return `+${digits}`;
+
+  // common India cases:
+  // 10 digits local => +91xxxxxxxxxx
+  if (digits.length === 10 && defaultCC) return `${defaultCC}${digits}`;
+
+  // 11 digits starting 0 => +91 + last 10
+  if (digits.length === 11 && digits.startsWith("0") && defaultCC) return `${defaultCC}${digits.slice(1)}`;
+
+  // 12 digits starting 91 => +91xxxxxxxxxx
+  if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
+
+  // else return digits (may still fail if Espo requires E.164)
+  return digits;
+}
+
+function digitsOnlyPhone(s) {
+  // keep this for heuristics; but make it Espo-safe too
+  return normalizePhoneForEspo(s);
 }
 
 function extractEmailHeuristic(text) {
@@ -198,7 +221,7 @@ function extractEmailHeuristic(text) {
 
 function extractPhoneHeuristic(text) {
   const m = String(text || "").match(/(\+?\d[\d\s\-()]{8,}\d)/);
-  return m ? digitsOnlyPhone(m[1]) : "";
+  return m ? normalizePhoneForEspo(m[1]) : "";
 }
 
 function extractNameHeuristic(text) {
@@ -239,6 +262,7 @@ function mergeContactInfo(base, incoming) {
   const out = { ...b };
 
   const fields = [
+    "source",
     "salutationName",
     "firstName",
     "middleName",
@@ -268,7 +292,7 @@ function mergeContactInfo(base, incoming) {
     out.opportunityAmount = Number.isFinite(n) ? n : out.opportunityAmount;
   }
 
-  if (cleanStr(out.phoneNumber)) out.phoneNumber = digitsOnlyPhone(out.phoneNumber);
+  if (cleanStr(out.phoneNumber)) out.phoneNumber = normalizePhoneForEspo(out.phoneNumber);
   return out;
 }
 
@@ -282,7 +306,6 @@ function enrichContactFromHeuristics(message, contactInfo) {
 
   if (!cleanStr(c.emailAddress) && email) c.emailAddress = email;
   if (!cleanStr(c.phoneNumber) && phone) c.phoneNumber = phone;
-
   if (!cleanStr(c.salutationName) && sal) c.salutationName = sal;
 
   if (!cleanStr(c.firstName) && fullName) {
@@ -302,7 +325,10 @@ function hasAnyContactData(c) {
     !!cleanStr(c?.emailAddress) ||
     !!cleanStr(c?.phoneNumber) ||
     !!cleanStr(c?.accountName) ||
-    !!cleanStr(c?.addressCountry)
+    !!cleanStr(c?.addressCountry) ||
+    !!cleanStr(c?.addressCity) ||
+    !!cleanStr(c?.cBusinessType) ||
+    !!cleanStr(c?.cFabricCategory)
   );
 }
 
@@ -318,7 +344,6 @@ function nextMissingContactField(contactInfo) {
     "cBusinessType",
     "cFabricCategory",
   ];
-
   for (const f of order) {
     if (!cleanStr(c[f])) return f;
   }
@@ -348,119 +373,128 @@ function questionForField(field) {
   }
 }
 
-/* ------------------------------ LeadCapture upsert: POST ONCE, then PUT ------------------------------ */
-function extractIdFromAny(obj) {
-  const id =
-    cleanStr(obj?.id) ||
-    cleanStr(obj?._id) ||
-    cleanStr(obj?.result?.id) ||
-    cleanStr(obj?.data?.id) ||
-    cleanStr(obj?.data?.result?.id) ||
-    cleanStr(obj?.leadCaptureId) ||
-    cleanStr(obj?.record?.id) ||
-    "";
-  return id || null;
+/* ------------------------------ Espo phone/email helpers ------------------------------ */
+function buildPhoneNumberData(phoneNumber) {
+  const p = normalizePhoneForEspo(phoneNumber);
+  if (!p) return undefined;
+  return [{ phoneNumber: p, primary: true, type: "Mobile" }];
 }
 
-async function leadCaptureCreate(payload) {
-  const resp = await fetch(LEAD_CAPTURE_POST_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  const text = await resp.text().catch(() => "");
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-
-  // try location header too
-  const loc = resp.headers.get("location") || resp.headers.get("Location");
-  let idFromLoc = null;
-  if (loc) {
-    const parts = loc.split("/").filter(Boolean);
-    idFromLoc = parts.length ? parts[parts.length - 1] : null;
-  }
-
-  const id = extractIdFromAny(data) || cleanStr(idFromLoc) || null;
-
-  return { ok: resp.ok, status: resp.status, id, data, raw: text };
+function buildEmailAddressData(emailAddress) {
+  const e = cleanStr(emailAddress);
+  if (!e) return undefined;
+  return [{ emailAddress: e, primary: true, type: "Work" }];
 }
 
-async function leadCaptureUpdate(id, payload) {
-  // update via normal Espo API (uses your ESPO_API_KEY already configured)
-  const updated = await espoRequest(`/${LEAD_CAPTURE_ENTITY}/${id}`, {
-    method: "PUT",
-    body: payload,
-  });
-  return updated;
-}
-
+/* ------------------------------ Lead upsert ------------------------------ */
 function buildLeadPayload(contactInfo) {
   const c = contactInfo || {};
+  const source = "Chat Bot";
+
+  const fullName = [cleanStr(c.firstName), cleanStr(c.middleName), cleanStr(c.lastName)]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
+  const name = fullName || cleanStr(c.accountName) || "Chat Visitor";
+
+  const assignedUserId = cleanStr(process.env.ESPO_ASSIGNED_USER_ID) || undefined;
+
+  // normalize phone strictly for Espo
+  const normalizedPhone = normalizePhoneForEspo(c.phoneNumber);
+
   const payload = {
+    source,
+    name,
+    assignedUserId,
+
     salutationName: cleanStr(c.salutationName) || undefined,
     firstName: cleanStr(c.firstName) || undefined,
     middleName: cleanStr(c.middleName) || undefined,
     lastName: cleanStr(c.lastName) || undefined,
+
+    // ✅ preferred for Espo
+    phoneNumberData: buildPhoneNumberData(normalizedPhone),
+    emailAddressData: buildEmailAddressData(c.emailAddress),
+
+    // ✅ ONLY send phoneNumber if normalized (avoid Espo validation failure)
+    phoneNumber: normalizedPhone ? normalizedPhone : undefined,
     emailAddress: cleanStr(c.emailAddress) || undefined,
-    phoneNumber: cleanStr(c.phoneNumber) || undefined,
+
     accountName: cleanStr(c.accountName) || undefined,
+
     addressStreet: cleanStr(c.addressStreet) || undefined,
     addressCity: cleanStr(c.addressCity) || undefined,
     addressState: cleanStr(c.addressState) || undefined,
     addressCountry: cleanStr(c.addressCountry) || undefined,
     addressPostalCode: cleanStr(c.addressPostalCode) || undefined,
+
     opportunityAmountCurrency: cleanStr(c.opportunityAmountCurrency) || undefined,
     opportunityAmount:
       c.opportunityAmount === null || c.opportunityAmount === undefined || c.opportunityAmount === ""
         ? undefined
         : Number(c.opportunityAmount),
+
     cBusinessType: cleanStr(c.cBusinessType) || undefined,
     cFabricCategory: cleanStr(c.cFabricCategory) || undefined,
+
     description: `Chat lead updated @ ${nowIso()}`,
   };
 
-  // remove undefined / invalid numeric
   Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-  if (payload.opportunityAmount !== undefined && !Number.isFinite(payload.opportunityAmount)) {
-    delete payload.opportunityAmount;
-  }
+  if (payload.opportunityAmount !== undefined && !Number.isFinite(payload.opportunityAmount)) delete payload.opportunityAmount;
+
   return payload;
 }
 
-async function upsertLeadCaptureSingleRecord(context, contactInfo) {
-  if (!hasAnyContactData(contactInfo)) return { ok: true, skipped: true };
+async function leadCreate(payload) {
+  return espoRequest(`/${LEAD_ENTITY}`, { method: "POST", body: payload });
+}
+
+async function leadUpdate(id, payload) {
+  // Try PUT first; if method not allowed, try PATCH
+  try {
+    return await espoRequest(`/${LEAD_ENTITY}/${id}`, { method: "PUT", body: payload });
+  } catch (e) {
+    if (e?.status === 405 || e?.status === 400) {
+      return espoRequest(`/${LEAD_ENTITY}/${id}`, { method: "PATCH", body: payload });
+    }
+    throw e;
+  }
+}
+
+async function upsertLeadSingleRecord(context, contactInfo) {
+  const src = cleanStr(contactInfo?.source) || "Chat Bot";
+  if (src !== "Chat Bot") return { ok: true, skipped: true, reason: "source_not_chatbot" };
+  if (!hasAnyContactData(contactInfo)) return { ok: true, skipped: true, reason: "no_contact_yet" };
 
   const payload = buildLeadPayload(contactInfo);
+  const existingId = cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId);
 
-  // ✅ If we already have a leadCaptureId for this chat session => PUT update
-  const existingId = cleanStr(context?.leadCaptureId);
   if (existingId) {
     try {
-      await leadCaptureUpdate(existingId, payload);
-      return { ok: true, mode: "put", id: existingId };
+      await leadUpdate(existingId, payload);
+      context.leadId = existingId;
+      return { ok: true, mode: "update", id: existingId };
     } catch (e) {
-      // If PUT failed, do a safe fallback: create new and store new id
-      console.warn("[LeadCapture] PUT failed, fallback POST:", e?.status, e?.data || e?.message);
-      context.leadCaptureId = null;
+      return {
+        ok: false,
+        mode: "update_failed",
+        id: existingId,
+        status: e?.status || null,
+        error: e?.data || e?.message || String(e),
+      };
     }
   }
 
-  // ✅ Otherwise create record ONCE (POST), store id for the rest of the chat
-  const created = await leadCaptureCreate(payload);
-
-  if (created.ok && created.id) {
-    context.leadCaptureId = created.id;
-    return { ok: true, mode: "post", id: created.id };
+  const created = await leadCreate(payload);
+  const newId = cleanStr(created?.id);
+  if (newId) {
+    context.leadId = newId;
+    return { ok: true, mode: "create", id: newId };
   }
 
-  // If POST didn't return id, we cannot update later. Log it.
-  console.warn("[LeadCapture] POST ok but id not found. Response:", created.status, created.data || created.raw);
-  return { ok: created.ok, mode: "post", id: null };
+  return { ok: false, mode: "create_no_id", id: null, raw: created };
 }
 
 /* ------------------------------ Product fetching & scoring ------------------------------ */
@@ -536,12 +570,7 @@ function scoreProduct(p, query) {
 async function fetchCandidateProducts() {
   const maxSize = Number(process.env.CHAT_PRODUCT_MAX_SIZE || 200);
   const data = await espoRequest(`/CProduct`, {
-    query: {
-      maxSize,
-      offset: 0,
-      orderBy: "modifiedAt",
-      order: "desc",
-    },
+    query: { maxSize, offset: 0, orderBy: "modifiedAt", order: "desc" },
   });
 
   const list = Array.isArray(data?.list) ? data.list : [];
@@ -549,12 +578,10 @@ async function fetchCandidateProducts() {
   const requireTag = rawTag === undefined ? "ecatalogue" : norm(rawTag);
   const enforceTag = !!requireTag && !["none", "off", "0"].includes(requireTag);
 
-  return enforceTag
-    ? list.filter((p) => toArr(p.merchTags).map(norm).includes(requireTag))
-    : list;
+  return enforceTag ? list.filter((p) => toArr(p.merchTags).map(norm).includes(requireTag)) : list;
 }
 
-/* ------------------------------ OpenAI parse schema (language + contactInfo) ------------------------------ */
+/* ------------------------------ OpenAI parse schema ------------------------------ */
 async function parseUserMessageWithOpenAI({ message, context }) {
   const schema = {
     type: "object",
@@ -580,10 +607,7 @@ async function parseUserMessageWithOpenAI({ message, context }) {
           gsm: {
             type: "object",
             additionalProperties: false,
-            properties: {
-              min: { type: ["number", "null"] },
-              max: { type: ["number", "null"] },
-            },
+            properties: { min: { type: ["number", "null"] }, max: { type: ["number", "null"] } },
             required: ["min", "max"],
           },
         },
@@ -593,6 +617,7 @@ async function parseUserMessageWithOpenAI({ message, context }) {
         type: "object",
         additionalProperties: false,
         properties: {
+          source: { type: ["string", "null"] },
           salutationName: { type: ["string", "null"] },
           firstName: { type: ["string", "null"] },
           lastName: { type: ["string", "null"] },
@@ -611,6 +636,7 @@ async function parseUserMessageWithOpenAI({ message, context }) {
           cFabricCategory: { type: ["string", "null"] },
         },
         required: [
+          "source",
           "salutationName",
           "firstName",
           "lastName",
@@ -661,16 +687,13 @@ async function handleChatMessage(req, res) {
   const incomingContext = req.body?.context && typeof req.body.context === "object" ? req.body.context : {};
   const sessionId = cleanStr(req.body?.sessionId) || "";
 
-  if (!message) {
-    return res.status(400).json({ ok: false, error: "message is required" });
-  }
+  if (!message) return res.status(400).json({ ok: false, error: "message is required" });
 
-  // Merge session context with incoming context
   let sessionCtx = {};
   if (sessionId) sessionCtx = SESSION_STORE.get(sessionId) || {};
   const context = { ...sessionCtx, ...incomingContext };
 
-  // 1) Parse intent + contact + query (OpenAI optional)
+  // 1) Parse intent + contact + query
   let action;
   let openaiParseOk = true;
   try {
@@ -682,16 +705,9 @@ async function handleChatMessage(req, res) {
       intent: "unknown",
       detail: "auto",
       refersToPrevious: false,
-      query: {
-        keywords: [],
-        color: null,
-        weave: null,
-        design: null,
-        structure: null,
-        content: [],
-        gsm: { min: null, max: null },
-      },
+      query: { keywords: [], color: null, weave: null, design: null, structure: null, content: [], gsm: { min: null, max: null } },
       contactInfo: {
+        source: null,
         salutationName: null,
         firstName: null,
         lastName: null,
@@ -717,44 +733,37 @@ async function handleChatMessage(req, res) {
   const detail = normalizeDetail(action?.detail, mode);
   const language = cleanStr(action?.language) || "auto";
 
-  // 2) Merge contact info (context + OpenAI extraction + heuristics)
+  // 2) Merge contact info
   const ctxContact = context?.contactInfo && typeof context.contactInfo === "object" ? context.contactInfo : {};
   let mergedContact = mergeContactInfo(ctxContact, action?.contactInfo || {});
   mergedContact = enrichContactFromHeuristics(message, mergedContact);
+  mergedContact.source = "Chat Bot";
 
-  // 3) IMPORTANT: Keep leadCaptureId in SAME record for SAME session
-  // store only user info + leadCaptureId in context
+  // 3) Preserve leadId
   const nextContext = {
     ...context,
     contactInfo: mergedContact,
-    leadCaptureId: cleanStr(context?.leadCaptureId) || null,
+    leadId: cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId) || null,
     lastIntent: intent,
   };
 
-  // 4) Upsert LeadCapture (POST once, then PUT updates)
-  // This is the fix for your "new entry every time" problem.
+  // 4) Upsert Lead
   try {
-    await upsertLeadCaptureSingleRecord(nextContext, mergedContact);
+    await upsertLeadSingleRecord(nextContext, mergedContact);
   } catch (e) {
-    console.warn("[LeadCapture] upsert failed:", e?.message || e);
+    console.warn("[Lead] upsert failed:", e?.status, e?.data || e?.message || e);
   }
 
-  // 5) Product logic
+  // 5) Products
   let products = [];
   try {
     products = await fetchCandidateProducts();
   } catch (e) {
-    return res.status(502).json({
-      ok: false,
-      error: "Failed to fetch catalogue data from EspoCRM",
-      details: e?.data || e?.message,
-    });
+    return res.status(502).json({ ok: false, error: "Failed to fetch catalogue data from EspoCRM", details: e?.data || e?.message });
   }
 
   const query = action?.query || {};
-  const ranked = products
-    .map((p) => ({ p, score: scoreProduct(p, query) }))
-    .sort((a, b) => b.score - a.score);
+  const ranked = products.map((p) => ({ p, score: scoreProduct(p, query) })).sort((a, b) => b.score - a.score);
 
   const top = ranked[0]?.p || null;
   const topScore = ranked[0]?.score || 0;
@@ -765,6 +774,7 @@ async function handleChatMessage(req, res) {
   const ctxIds = Array.isArray(nextContext?.lastProductIds) ? nextContext.lastProductIds : [];
   const refersToPrev = !!action?.refersToPrevious;
   let focused = top;
+
   if (refersToPrev && ctxIds.length) {
     const byId = new Map(ranked.map(({ p }) => [p.id, p]));
     focused = byId.get(ctxIds[0]) || top;
@@ -780,9 +790,8 @@ async function handleChatMessage(req, res) {
       slug: cleanStr(p.productslug),
       label: pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p)),
     }))
-    .filter((s) => !!cleanStr(s.fabricCode)); // must include fabricCode
+    .filter((s) => !!cleanStr(s.fabricCode));
 
-  // Update product memory
   if (intent === "availability" || intent === "recommend") {
     nextContext.lastProductIds = suggestions.map((s) => s.id);
     nextContext.lastProduct = focused
@@ -793,73 +802,38 @@ async function handleChatMessage(req, res) {
     nextContext.lastProduct = { id: focused.id, slug: focused.productslug, name: pickFirstNonEmpty(focused.productTitle, focused.name) };
   }
 
-  // 6) Create final reply (localized)
+  // 6) Reply
   let baseReply = "";
   if (intent === "availability") {
     baseReply = hasMatch
       ? "Yes — we have matching fabrics in our catalogue. Do you want details?"
       : "I couldn’t find an exact match in our catalogue. Can you share GSM, content (cotton/poly), and weave (poplin/twill/denim)?";
   } else if (intent === "details") {
-    if (!hasMatch && !refersToPrev) {
-      baseReply = "Which fabric should I describe? Share the name/code/slug (or color + weave + GSM).";
-    } else if (focused) {
-      baseReply = detail === "long"
-        ? (() => {
-            // long summary
-            const lines = [];
-            lines.push(pickFirstNonEmpty(focused.productTitle, focused.name, getFabricCode(focused)));
-            const code = getFabricCode(focused);
-            if (code) lines.push(`Fabric Code: ${code}`);
-            const bits = [];
-            if (focused.category) bits.push(cleanStr(focused.category));
-            if (focused.gsm) bits.push(`${cleanStr(focused.gsm)} GSM`);
-            const content = toArr(focused.content).filter(Boolean).join(", ");
-            if (content) bits.push(content);
-            const structure = toArr(focused.structure).filter(Boolean).join(", ");
-            if (structure) bits.push(structure);
-            const finish = toArr(focused.finish).filter(Boolean).join(", ");
-            if (finish) bits.push(finish);
-            const colors = toArr(focused.color).filter(Boolean).slice(0, 4).join(", ");
-            if (colors) bits.push(colors);
-            if (bits.length) lines.push(bits.join(" · "));
-            const url = getFrontendUrlForProduct(focused);
-            if (url) lines.push(url);
+    if (!hasMatch && !refersToPrev) baseReply = "Which fabric should I describe? Share the name/code/slug (or color + weave + GSM).";
+    else if (focused) {
+      const lines = [];
+      lines.push(pickFirstNonEmpty(focused.productTitle, focused.name, getFabricCode(focused)));
+      const code = getFabricCode(focused);
+      if (code) lines.push(`Fabric Code: ${code}`);
 
-            const desc = cleanStr(focused.fullProductDescription || focused.description)
-              .replace(/<[^>]*>/g, " ")
-              .replace(/\s+/g, " ")
-              .trim();
-            if (desc) {
-              const max = Number(process.env.CHAT_MAX_DESC_CHARS || 450);
-              lines.push("\n" + (desc.length > max ? desc.slice(0, max).trim() + "..." : desc));
-            }
-            return lines.join("\n");
-          })()
-        : (() => {
-            // short summary
-            const lines = [];
-            lines.push(pickFirstNonEmpty(focused.productTitle, focused.name, getFabricCode(focused)));
-            const code = getFabricCode(focused);
-            if (code) lines.push(`Fabric Code: ${code}`);
-            const bits = [];
-            if (focused.category) bits.push(cleanStr(focused.category));
-            if (focused.gsm) bits.push(`${cleanStr(focused.gsm)} GSM`);
-            const content = toArr(focused.content).filter(Boolean).join(", ");
-            if (content) bits.push(content);
-            const structure = toArr(focused.structure).filter(Boolean).join(", ");
-            if (structure) bits.push(structure);
-            const finish = toArr(focused.finish).filter(Boolean).join(", ");
-            if (finish) bits.push(finish);
-            const colors = toArr(focused.color).filter(Boolean).slice(0, 4).join(", ");
-            if (colors) bits.push(colors);
-            if (bits.length) lines.push(bits.join(" · "));
-            const url = getFrontendUrlForProduct(focused);
-            if (url) lines.push(url);
-            return lines.join("\n");
-          })();
-    } else {
-      baseReply = "Which fabric should I describe?";
-    }
+      const bits = [];
+      if (focused.category) bits.push(cleanStr(focused.category));
+      if (focused.gsm) bits.push(`${cleanStr(focused.gsm)} GSM`);
+      const content = toArr(focused.content).filter(Boolean).join(", ");
+      if (content) bits.push(content);
+      const structure = toArr(focused.structure).filter(Boolean).join(", ");
+      if (structure) bits.push(structure);
+      const finish = toArr(focused.finish).filter(Boolean).join(", ");
+      if (finish) bits.push(finish);
+      const colors = toArr(focused.color).filter(Boolean).slice(0, 4).join(", ");
+      if (colors) bits.push(colors);
+      if (bits.length) lines.push(bits.join(" · "));
+
+      const url = getFrontendUrlForProduct(focused);
+      if (url) lines.push(url);
+
+      baseReply = lines.join("\n");
+    } else baseReply = "Which fabric should I describe?";
   } else if (intent === "recommend") {
     if (hasMatch) {
       const top3 = ranked
@@ -876,28 +850,14 @@ async function handleChatMessage(req, res) {
         });
 
       baseReply = `Here are a few matching options:\n${top3.join("\n")}\n\nWant details for the best match?`;
-    } else {
-      baseReply = "I couldn’t find close matches. Tell me color, GSM range, content, and end-use (shirts/dresses/uniforms).";
-    }
+    } else baseReply = "I couldn’t find close matches. Tell me color, GSM range, content, and end-use (shirts/dresses/uniforms).";
   } else {
     baseReply = "Tell me what fabric you’re looking for (color, weave/structure, GSM, content). I’ll check our catalogue.";
   }
 
-  // Add 1 step-by-step contact question (only if missing)
   const missingField = nextMissingContactField(mergedContact);
   const askOne = missingField ? questionForField(missingField) : "";
-
-  const plan = {
-    reply: baseReply,
-    askOne,
-    product: focused
-      ? {
-          title: pickFirstNonEmpty(focused.productTitle, focused.name, getFabricCode(focused)),
-          fabricCode: getFabricCode(focused),
-          url: getFrontendUrlForProduct(focused),
-        }
-      : null,
-  };
+  const plan = { reply: baseReply, askOne };
 
   let replyText = "";
   const openaiAvailable = !!cleanStr(process.env.OPENAI_API_KEY);
@@ -910,20 +870,13 @@ async function handleChatMessage(req, res) {
         "Do NOT output JSON.\n" +
         "Use only the facts in ReplyPlan.\n" +
         "If ContactQuestion is present, ask ONLY that ONE question at the end.";
-
-      const user =
-        `User message: ${message}\n\n` +
-        `ReplyPlan: ${safeJson(plan)}\n\n` +
-        `ContactQuestion: ${askOne}`;
-
+      const user = `User message: ${message}\n\nReplyPlan: ${safeJson(plan)}\n\nContactQuestion: ${askOne}`;
       replyText = await openaiText(system, user, 420);
     } catch {
-      replyText = baseReply;
-      if (askOne) replyText += `\n\n${askOne}`;
+      replyText = baseReply + (askOne ? `\n\n${askOne}` : "");
     }
   } else {
-    replyText = baseReply;
-    if (askOne) replyText += `\n\n${askOne}`;
+    replyText = baseReply + (askOne ? `\n\n${askOne}` : "");
   }
 
   const out = {
@@ -936,8 +889,9 @@ async function handleChatMessage(req, res) {
       intent,
       topScore,
       openaiUsed: openaiParseOk && openaiAvailable,
-      leadCaptureId: cleanStr(nextContext.leadCaptureId) || null,
+      leadId: cleanStr(nextContext.leadId) || null,
       language,
+      detail,
     },
   };
 
