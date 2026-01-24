@@ -46,6 +46,19 @@ function pickFirstNonEmpty(...vals) {
   return "";
 }
 
+/* ------------------------------ NEW: env-driven reply instructions ------------------------------ */
+function getChatExtraInstructions() {
+  const raw = String(process.env.CHAT_EXTRA_INSTRUCTIONS || "");
+  const text = raw.replace(/\\n/g, "\n").trim();
+  if (!text) return "";
+
+  const max = Number(process.env.CHAT_EXTRA_INSTRUCTIONS_MAX_CHARS || 4000);
+  if (Number.isFinite(max) && max > 0 && text.length > max) {
+    return text.slice(0, max);
+  }
+  return text;
+}
+
 /* ------------------------------ FRONTEND URL helpers ------------------------------ */
 function joinUrl(base, slug) {
   const b = cleanStr(base);
@@ -253,7 +266,11 @@ function splitNameParts(fullName) {
   const parts = n.split(" ").filter(Boolean);
   if (parts.length === 1) return { firstName: parts[0], middleName: null, lastName: null };
   if (parts.length === 2) return { firstName: parts[0], middleName: null, lastName: parts[1] };
-  return { firstName: parts[0], middleName: parts.slice(1, -1).join(" "), lastName: parts[parts.length - 1] };
+  return {
+    firstName: parts[0],
+    middleName: parts.slice(1, -1).join(" "),
+    lastName: parts[parts.length - 1],
+  };
 }
 
 function mergeContactInfo(base, incoming) {
@@ -705,7 +722,15 @@ async function handleChatMessage(req, res) {
       intent: "unknown",
       detail: "auto",
       refersToPrevious: false,
-      query: { keywords: [], color: null, weave: null, design: null, structure: null, content: [], gsm: { min: null, max: null } },
+      query: {
+        keywords: [],
+        color: null,
+        weave: null,
+        design: null,
+        structure: null,
+        content: [],
+        gsm: { min: null, max: null },
+      },
       contactInfo: {
         source: null,
         salutationName: null,
@@ -759,7 +784,11 @@ async function handleChatMessage(req, res) {
   try {
     products = await fetchCandidateProducts();
   } catch (e) {
-    return res.status(502).json({ ok: false, error: "Failed to fetch catalogue data from EspoCRM", details: e?.data || e?.message });
+    return res.status(502).json({
+      ok: false,
+      error: "Failed to fetch catalogue data from EspoCRM",
+      details: e?.data || e?.message,
+    });
   }
 
   const query = action?.query || {};
@@ -799,10 +828,14 @@ async function handleChatMessage(req, res) {
       : null;
   } else if (intent === "details" && focused) {
     nextContext.lastProductIds = [focused.id];
-    nextContext.lastProduct = { id: focused.id, slug: focused.productslug, name: pickFirstNonEmpty(focused.productTitle, focused.name) };
+    nextContext.lastProduct = {
+      id: focused.id,
+      slug: focused.productslug,
+      name: pickFirstNonEmpty(focused.productTitle, focused.name),
+    };
   }
 
-  // 6) Reply
+  // 6) Reply (your existing logic is unchanged)
   let baseReply = "";
   if (intent === "availability") {
     baseReply = hasMatch
@@ -861,15 +894,21 @@ async function handleChatMessage(req, res) {
 
   let replyText = "";
   const openaiAvailable = !!cleanStr(process.env.OPENAI_API_KEY);
+
   if (openaiAvailable) {
     try {
+      // ✅ ONLY CHANGE: inject env-driven extra instructions into system prompt
+      const extra = getChatExtraInstructions();
+
       const system =
         "You are a helpful fabric catalogue assistant.\n" +
         "Reply in the SAME language as the user.\n" +
         "Be natural and human.\n" +
         "Do NOT output JSON.\n" +
         "Use only the facts in ReplyPlan.\n" +
-        "If ContactQuestion is present, ask ONLY that ONE question at the end.";
+        "If ContactQuestion is present, ask ONLY that ONE question at the end." +
+        (extra ? `\n\n---\nExtra instructions (from env):\n${extra}` : "");
+
       const user = `User message: ${message}\n\nReplyPlan: ${safeJson(plan)}\n\nContactQuestion: ${askOne}`;
       replyText = await openaiText(system, user, 420);
     } catch {
