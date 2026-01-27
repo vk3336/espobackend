@@ -11,6 +11,7 @@ globalThis.__AGE_CHAT_SESSIONS = SESSION_STORE;
 /** We will store leads in Espo "Lead" entity */
 const LEAD_ENTITY = "Lead";
 
+/* ------------------------------ tiny utils ------------------------------ */
 function nowIso() {
   return new Date().toISOString();
 }
@@ -46,6 +47,69 @@ function pickFirstNonEmpty(...vals) {
   return "";
 }
 
+function stripHtml(html) {
+  const s = String(html || "");
+  // simple + safe enough for snippets
+  return s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function parseCsvEnv(name) {
+  const raw = cleanStr(process.env[name]);
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((x) => cleanStr(x))
+    .filter(Boolean);
+}
+
+/* ------------------------------ NEW: choose chat entities dynamically ------------------------------ */
+/**
+ * Priority:
+ *  1) CHAT_ENTITIES (recommended)
+ *  2) ESPO_ENTITIES minus Lead
+ *  3) fallback => CProduct
+ */
+function getChatEntities() {
+  const chat = parseCsvEnv("CHAT_ENTITIES");
+  if (chat.length) return chat;
+
+  const all = parseCsvEnv("ESPO_ENTITIES");
+  const filtered = all.filter((e) => norm(e) !== "lead");
+  if (filtered.length) return filtered;
+
+  return ["CProduct"];
+}
+
+/** simple concurrency limiter (no deps) */
+function createLimiter(max) {
+  const limit = Number(max);
+  const n = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 3;
+
+  let active = 0;
+  const queue = [];
+
+  const next = () => {
+    if (active >= n) return;
+    const job = queue.shift();
+    if (!job) return;
+
+    active++;
+    Promise.resolve()
+      .then(job.fn)
+      .then(job.resolve, job.reject)
+      .finally(() => {
+        active--;
+        next();
+      });
+  };
+
+  return (fn) =>
+    new Promise((resolve, reject) => {
+      queue.push({ fn, resolve, reject });
+      next();
+    });
+}
+
 /* ------------------------------ NEW: env-driven reply instructions ------------------------------ */
 function getChatExtraInstructions() {
   const raw = String(process.env.CHAT_EXTRA_INSTRUCTIONS || "");
@@ -74,6 +138,38 @@ function getFrontendUrlForProduct(p) {
   const slug = cleanStr(p?.productslug);
   if (!base || !slug) return "";
   return joinUrl(base, slug);
+}
+
+/**
+ * Optional: per-entity base URLs (only if you set them).
+ * - AGE_COLLECTION_URL
+ * - AGE_BLOG_URL
+ * - AGE_AUTHOR_URL
+ */
+function getFrontendUrlForEntity(entity, rec) {
+  const e = cleanStr(entity);
+
+  if (e === "CProduct") return getFrontendUrlForProduct(rec);
+
+  if (e === "CCollection") {
+    const base = cleanStr(process.env.AGE_COLLECTION_URL);
+    const slug = pickFirstNonEmpty(rec?.collectionslug, rec?.slug, rec?.productslug);
+    return base && slug ? joinUrl(base, slug) : "";
+  }
+
+  if (e === "CBlog") {
+    const base = cleanStr(process.env.AGE_BLOG_URL);
+    const slug = pickFirstNonEmpty(rec?.slug, rec?.blogslug);
+    return base && slug ? joinUrl(base, slug) : "";
+  }
+
+  if (e === "CAuthor") {
+    const base = cleanStr(process.env.AGE_AUTHOR_URL);
+    const slug = pickFirstNonEmpty(rec?.slug, rec?.authorslug);
+    return base && slug ? joinUrl(base, slug) : "";
+  }
+
+  return "";
 }
 
 function getFabricCode(p) {
@@ -191,7 +287,6 @@ async function openaiText(system, user, maxTokens = 420) {
 }
 
 /* ------------------------------ Contact capture helpers ------------------------------ */
-
 /**
  * Normalize phone into something Espo validator accepts (often E.164).
  * DEFAULT_PHONE_COUNTRY_CODE example: +91
@@ -200,30 +295,19 @@ function normalizePhoneForEspo(input) {
   const raw = cleanStr(input);
   if (!raw) return "";
 
-  const defaultCC = cleanStr(process.env.DEFAULT_PHONE_COUNTRY_CODE || "+91"); // set in .env
+  const defaultCC = cleanStr(process.env.DEFAULT_PHONE_COUNTRY_CODE || "+91");
   const startsPlus = raw.startsWith("+");
   const digits = raw.replace(/[^\d]/g, "");
   if (!digits) return "";
 
-  // if already +, keep +digits
   if (startsPlus) return `+${digits}`;
-
-  // common India cases:
-  // 10 digits local => +91xxxxxxxxxx
   if (digits.length === 10 && defaultCC) return `${defaultCC}${digits}`;
-
-  // 11 digits starting 0 => +91 + last 10
   if (digits.length === 11 && digits.startsWith("0") && defaultCC) return `${defaultCC}${digits.slice(1)}`;
-
-  // 12 digits starting 91 => +91xxxxxxxxxx
   if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
-
-  // else return digits (may still fail if Espo requires E.164)
   return digits;
 }
 
 function digitsOnlyPhone(s) {
-  // keep this for heuristics; but make it Espo-safe too
   return normalizePhoneForEspo(s);
 }
 
@@ -414,10 +498,7 @@ function buildLeadPayload(contactInfo) {
     .trim();
 
   const name = fullName || cleanStr(c.accountName) || "Chat Visitor";
-
   const assignedUserId = cleanStr(process.env.ESPO_ASSIGNED_USER_ID) || undefined;
-
-  // normalize phone strictly for Espo
   const normalizedPhone = normalizePhoneForEspo(c.phoneNumber);
 
   const payload = {
@@ -430,11 +511,9 @@ function buildLeadPayload(contactInfo) {
     middleName: cleanStr(c.middleName) || undefined,
     lastName: cleanStr(c.lastName) || undefined,
 
-    // ✅ preferred for Espo
     phoneNumberData: buildPhoneNumberData(normalizedPhone),
     emailAddressData: buildEmailAddressData(c.emailAddress),
 
-    // ✅ ONLY send phoneNumber if normalized (avoid Espo validation failure)
     phoneNumber: normalizedPhone ? normalizedPhone : undefined,
     emailAddress: cleanStr(c.emailAddress) || undefined,
 
@@ -469,7 +548,6 @@ async function leadCreate(payload) {
 }
 
 async function leadUpdate(id, payload) {
-  // Try PUT first; if method not allowed, try PATCH
   try {
     return await espoRequest(`/${LEAD_ENTITY}/${id}`, { method: "PUT", body: payload });
   } catch (e) {
@@ -526,8 +604,8 @@ function buildProductText(p) {
   parts.push(toArr(p.structure).map(cleanStr).join(" "));
   parts.push(toArr(p.design).map(cleanStr).join(" "));
   parts.push(pickFirstNonEmpty(p.productslug));
-  parts.push(pickFirstNonEmpty(p.description));
-  parts.push(pickFirstNonEmpty(p.fullProductDescription));
+  parts.push(stripHtml(pickFirstNonEmpty(p.description)));
+  parts.push(stripHtml(pickFirstNonEmpty(p.fullProductDescription)));
   parts.push(toArr(p.keywords).map(cleanStr).join(" "));
   return norm(parts.filter(Boolean).join(" \n "));
 }
@@ -584,18 +662,199 @@ function scoreProduct(p, query) {
   return score;
 }
 
-async function fetchCandidateProducts() {
-  const maxSize = Number(process.env.CHAT_PRODUCT_MAX_SIZE || 200);
-  const data = await espoRequest(`/CProduct`, {
-    query: { maxSize, offset: 0, orderBy: "modifiedAt", order: "desc" },
-  });
+/* ------------------------------ NEW: multi-entity knowledge items ------------------------------ */
+function itemKey(entity, id) {
+  const e = cleanStr(entity);
+  const i = cleanStr(id);
+  return e && i ? `${e}:${i}` : "";
+}
 
-  const list = Array.isArray(data?.list) ? data.list : [];
-  const rawTag = process.env.CHAT_REQUIRE_MERCHTAG;
-  const requireTag = rawTag === undefined ? "ecatalogue" : norm(rawTag);
-  const enforceTag = !!requireTag && !["none", "off", "0"].includes(requireTag);
+function getItemTitle(entity, rec) {
+  if (entity === "CProduct") return pickFirstNonEmpty(rec?.productTitle, rec?.name, getFabricCode(rec));
+  return pickFirstNonEmpty(rec?.title, rec?.name, rec?.subject, rec?.heading, rec?.label);
+}
 
-  return enforceTag ? list.filter((p) => toArr(p.merchTags).map(norm).includes(requireTag)) : list;
+function buildGenericRecordText(entity, rec) {
+  const parts = [];
+  parts.push(entity);
+
+  // prioritized common fields (fast wins)
+  const priorityKeys = [
+    "title",
+    "name",
+    "subject",
+    "heading",
+    "slug",
+    "productslug",
+    "collectionslug",
+    "blogslug",
+    "authorslug",
+    "category",
+    "tags",
+    "keywords",
+    "email",
+    "emailAddress",
+    "phone",
+    "phoneNumber",
+    "website",
+    "address",
+    "addressStreet",
+    "addressCity",
+    "addressState",
+    "addressCountry",
+    "description",
+    "shortDescription",
+    "content",
+    "body",
+    "text",
+    "fullDescription",
+  ];
+
+  for (const k of priorityKeys) {
+    const v = rec?.[k];
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string") parts.push(stripHtml(v));
+    else if (typeof v === "number") parts.push(String(v));
+    else if (Array.isArray(v)) parts.push(v.map((x) => stripHtml(cleanStr(x))).filter(Boolean).join(" "));
+  }
+
+  // include a little extra: any short primitive fields
+  try {
+    const keys = Object.keys(rec || {});
+    for (const k of keys) {
+      if (priorityKeys.includes(k)) continue;
+      const v = rec?.[k];
+      if (v === null || v === undefined) continue;
+      if (typeof v === "string") {
+        const s = stripHtml(v);
+        if (s && s.length <= 120) parts.push(s);
+      } else if (typeof v === "number" || typeof v === "boolean") {
+        parts.push(String(v));
+      } else if (Array.isArray(v)) {
+        const s = v.map((x) => stripHtml(cleanStr(x))).filter(Boolean).join(" ");
+        if (s && s.length <= 180) parts.push(s);
+      }
+    }
+  } catch {}
+
+  return norm(parts.filter(Boolean).join(" \n "));
+}
+
+function scoreGeneric(entity, rec, query) {
+  const text = buildGenericRecordText(entity, rec);
+  let score = 0;
+
+  const tokens = [];
+  if (query?.keywords?.length) tokens.push(...query.keywords);
+  if (query?.color) tokens.push(query.color);
+  if (query?.weave) tokens.push(query.weave);
+  if (query?.design) tokens.push(query.design);
+  if (query?.structure) tokens.push(query.structure);
+  if (Array.isArray(query?.content)) tokens.push(...query.content);
+
+  const uniq = Array.from(new Set(tokens.map(norm).filter(Boolean)));
+
+  for (const t of uniq) {
+    if (!t || t.length < 2) continue;
+    if (text.includes(t)) score += 2;
+  }
+
+  // boost if token hits the title/slug-like fields
+  const title = norm(getItemTitle(entity, rec));
+  const slug = norm(pickFirstNonEmpty(rec?.slug, rec?.productslug, rec?.collectionslug, rec?.blogslug, rec?.authorslug));
+  for (const t of uniq) {
+    if (!t) continue;
+    if (title.includes(t)) score += 6;
+    if (slug.includes(t)) score += 5;
+  }
+
+  return score;
+}
+
+function scoreItem(item, query) {
+  if (!item) return 0;
+  if (item.entity === "CProduct") return scoreProduct(item.record, query);
+  return scoreGeneric(item.entity, item.record, query);
+}
+
+/**
+ * Fetch list for an entity safely:
+ * - tries with orderBy/order; if it fails, retries without sorting fields
+ */
+async function fetchEntityList(entity) {
+  const e = cleanStr(entity);
+  if (!e) return [];
+
+  const maxSizeDefault = Number(process.env.CHAT_ENTITY_MAX_SIZE || 120);
+  const perEntityKey = `CHAT_MAX_SIZE_${e.toUpperCase()}`;
+  const maxSize = Number(process.env[perEntityKey] || maxSizeDefault);
+
+  const orderBy = cleanStr(process.env.CHAT_ENTITY_ORDER_BY || "modifiedAt");
+  const order = cleanStr(process.env.CHAT_ENTITY_ORDER || "desc");
+
+  try {
+    const data = await espoRequest(`/${e}`, {
+      query: { maxSize, offset: 0, orderBy, order },
+    });
+    return Array.isArray(data?.list) ? data.list : [];
+  } catch (err1) {
+    // fallback: no orderBy
+    const data = await espoRequest(`/${e}`, {
+      query: { maxSize, offset: 0 },
+    });
+    return Array.isArray(data?.list) ? data.list : [];
+  }
+}
+
+/**
+ * NEW: fetch from ALL chat entities + return unified "items"
+ * Each item: { entity, id, record }
+ */
+async function fetchCandidateItems() {
+  const entities = getChatEntities();
+
+  const concurrency = Number(process.env.CHAT_ENTITY_CONCURRENCY || 3);
+  const limit = createLimiter(concurrency);
+
+  const all = [];
+  const errors = [];
+
+  await Promise.all(
+    entities.map((entity) =>
+      limit(async () => {
+        try {
+          const list = await fetchEntityList(entity);
+
+          // Optional: keep your merchTag enforcement only for CProduct
+          if (entity === "CProduct") {
+            const rawTag = process.env.CHAT_REQUIRE_MERCHTAG;
+            const requireTag = rawTag === undefined ? "ecatalogue" : norm(rawTag);
+            const enforceTag = !!requireTag && !["none", "off", "0"].includes(requireTag);
+
+            const filtered = enforceTag
+              ? list.filter((p) => toArr(p.merchTags).map(norm).includes(requireTag))
+              : list;
+
+            for (const rec of filtered) {
+              const id = cleanStr(rec?.id);
+              if (!id) continue;
+              all.push({ entity, id, record: rec });
+            }
+          } else {
+            for (const rec of list) {
+              const id = cleanStr(rec?.id);
+              if (!id) continue;
+              all.push({ entity, id, record: rec });
+            }
+          }
+        } catch (e) {
+          errors.push({ entity, status: e?.status || null, error: e?.data || e?.message || String(e) });
+        }
+      })
+    )
+  );
+
+  return { items: all, errors };
 }
 
 /* ------------------------------ OpenAI parse schema ------------------------------ */
@@ -697,6 +956,86 @@ function normalizeDetail(actionDetail, requestedMode) {
   return "auto";
 }
 
+/* ------------------------------ NEW: details formatting for non-product entities ------------------------------ */
+function pickDisplayPairs(entity, rec) {
+  const r = rec || {};
+  const pairs = [];
+
+  // try common "contact/company" style fields first
+  const candidates = [
+    ["website", "Website"],
+    ["url", "URL"],
+    ["email", "Email"],
+    ["emailAddress", "Email"],
+    ["phone", "Phone"],
+    ["phoneNumber", "Phone"],
+    ["whatsapp", "WhatsApp"],
+    ["address", "Address"],
+    ["addressStreet", "Street"],
+    ["addressCity", "City"],
+    ["addressState", "State"],
+    ["addressCountry", "Country"],
+    ["description", "Description"],
+    ["shortDescription", "Description"],
+    ["content", "Content"],
+    ["body", "Content"],
+    ["text", "Content"],
+  ];
+
+  for (const [key, label] of candidates) {
+    const v = r?.[key];
+    if (v === null || v === undefined) continue;
+
+    if (typeof v === "string") {
+      const s = stripHtml(v);
+      if (!s) continue;
+      pairs.push([label, s.length > 260 ? `${s.slice(0, 260)}…` : s]);
+    } else if (typeof v === "number") {
+      pairs.push([label, String(v)]);
+    } else if (Array.isArray(v)) {
+      const s = v.map((x) => stripHtml(cleanStr(x))).filter(Boolean).join(", ");
+      if (s) pairs.push([label, s.length > 260 ? `${s.slice(0, 260)}…` : s]);
+    }
+    if (pairs.length >= 6) break;
+  }
+
+  // If still empty, pick a few short primitive fields
+  if (pairs.length < 2) {
+    try {
+      const keys = Object.keys(r);
+      for (const k of keys) {
+        const v = r?.[k];
+        if (v === null || v === undefined) continue;
+        if (typeof v === "string") {
+          const s = stripHtml(v);
+          if (!s || s.length > 140) continue;
+          pairs.push([k, s]);
+        } else if (typeof v === "number" || typeof v === "boolean") {
+          pairs.push([k, String(v)]);
+        }
+        if (pairs.length >= 6) break;
+      }
+    } catch {}
+  }
+
+  return pairs;
+}
+
+function buildNonProductDetailsReply(entity, rec) {
+  const title = getItemTitle(entity, rec) || `${entity} info`;
+  const lines = [title];
+
+  const pairs = pickDisplayPairs(entity, rec);
+  for (const [k, v] of pairs) {
+    lines.push(`${k}: ${v}`);
+  }
+
+  const url = getFrontendUrlForEntity(entity, rec);
+  if (url) lines.push(url);
+
+  return lines.join("\n");
+}
+
 /* ------------------------------ main handler ------------------------------ */
 async function handleChatMessage(req, res) {
   const message = cleanStr(req.body?.message);
@@ -770,6 +1109,9 @@ async function handleChatMessage(req, res) {
     contactInfo: mergedContact,
     leadId: cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId) || null,
     lastIntent: intent,
+
+    // NEW: multi-entity memory
+    lastItems: Array.isArray(context?.lastItems) ? context.lastItems : [],
   };
 
   // 4) Upsert Lead
@@ -779,100 +1121,126 @@ async function handleChatMessage(req, res) {
     console.warn("[Lead] upsert failed:", e?.status, e?.data || e?.message || e);
   }
 
-  // 5) Products
-  let products = [];
+  // 5) Fetch multi-entity knowledge
+  let items = [];
+  let fetchErrors = [];
   try {
-    products = await fetchCandidateProducts();
+    const r = await fetchCandidateItems();
+    items = r.items || [];
+    fetchErrors = r.errors || [];
   } catch (e) {
     return res.status(502).json({
       ok: false,
-      error: "Failed to fetch catalogue data from EspoCRM",
+      error: "Failed to fetch catalogue/knowledge data from EspoCRM",
       details: e?.data || e?.message,
     });
   }
 
-  const query = action?.query || {};
-  const ranked = products.map((p) => ({ p, score: scoreProduct(p, query) })).sort((a, b) => b.score - a.score);
+  if (!items.length) {
+    return res.status(502).json({
+      ok: false,
+      error: "No chat entities returned any records",
+      details: fetchErrors.length ? fetchErrors : undefined,
+    });
+  }
 
-  const top = ranked[0]?.p || null;
-  const topScore = ranked[0]?.score || 0;
+  const query = action?.query || {};
+
+  const rankedAll = items
+    .map((it) => ({ it, score: scoreItem(it, query) }))
+    .sort((a, b) => b.score - a.score);
+
+  const rankedProducts = rankedAll.filter((x) => x.it?.entity === "CProduct");
+
+  const topAll = rankedAll[0]?.it || null;
+  const topAllScore = rankedAll[0]?.score || 0;
+
+  const topProduct = rankedProducts[0]?.it || null;
+  const topProductScore = rankedProducts[0]?.score || 0;
 
   const minScore = Number(process.env.CHAT_MIN_SCORE || 10);
-  const hasMatch = !!top && topScore >= minScore;
+  const hasAnyMatch = !!topAll && topAllScore >= minScore;
+  const hasProductMatch = !!topProduct && topProductScore >= minScore;
 
-  const ctxIds = Array.isArray(nextContext?.lastProductIds) ? nextContext.lastProductIds : [];
+  // Previous focus logic (multi-entity)
+  const lastItems = Array.isArray(nextContext?.lastItems) ? nextContext.lastItems : [];
   const refersToPrev = !!action?.refersToPrevious;
-  let focused = top;
 
-  if (refersToPrev && ctxIds.length) {
-    const byId = new Map(ranked.map(({ p }) => [p.id, p]));
-    focused = byId.get(ctxIds[0]) || top;
+  let focused = topAll;
+
+  if (refersToPrev && lastItems.length) {
+    const wanted = lastItems[0];
+    const key = itemKey(wanted?.entity, wanted?.id);
+    if (key) {
+      const map = new Map(rankedAll.map(({ it }) => [itemKey(it.entity, it.id), it]));
+      focused = map.get(key) || topAll;
+    }
   }
 
-  const suggestions = ranked
+  // Suggestions (keep old product-only shape for frontend safety)
+  const suggestions = rankedProducts
     .filter((x) => x.score > 0)
     .slice(0, 6)
-    .map(({ p }) => ({
-      id: p.id,
-      fabricCode: getFabricCode(p) || "",
-      url: getFrontendUrlForProduct(p) || "",
-      slug: cleanStr(p.productslug),
-      label: pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p)),
-    }))
+    .map(({ it }) => {
+      const p = it.record;
+      return {
+        id: p.id,
+        fabricCode: getFabricCode(p) || "",
+        url: getFrontendUrlForProduct(p) || "",
+        slug: cleanStr(p.productslug),
+        label: pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p)),
+      };
+    })
     .filter((s) => !!cleanStr(s.fabricCode));
 
+  // Optional: multi-entity suggestions for future frontend upgrade
+  const suggestionsV2 = rankedAll
+    .filter((x) => x.score > 0)
+    .slice(0, 10)
+    .map(({ it, score }) => ({
+      entity: it.entity,
+      id: it.id,
+      label: getItemTitle(it.entity, it.record) || `${it.entity} ${it.id}`,
+      url: getFrontendUrlForEntity(it.entity, it.record) || "",
+      score,
+    }));
+
+  // Remember context IDs
   if (intent === "availability" || intent === "recommend") {
+    // keep old behavior for products
     nextContext.lastProductIds = suggestions.map((s) => s.id);
-    nextContext.lastProduct = focused
-      ? { id: focused.id, slug: focused.productslug, name: pickFirstNonEmpty(focused.productTitle, focused.name) }
+    nextContext.lastProduct = topProduct
+      ? { id: topProduct.id, slug: topProduct.record?.productslug, name: getItemTitle("CProduct", topProduct.record) }
       : null;
-  } else if (intent === "details" && focused) {
-    nextContext.lastProductIds = [focused.id];
-    nextContext.lastProduct = {
-      id: focused.id,
-      slug: focused.productslug,
-      name: pickFirstNonEmpty(focused.productTitle, focused.name),
-    };
+
+    // new multi-entity memory (prefer product suggestions if any, else best overall)
+    const remember = suggestionsV2.slice(0, 6).map((s) => ({ entity: s.entity, id: s.id }));
+    nextContext.lastItems = remember.length ? remember : topAll ? [{ entity: topAll.entity, id: topAll.id }] : [];
+  } else if (intent === "details") {
+    nextContext.lastItems = focused ? [{ entity: focused.entity, id: focused.id }] : [];
+    if (focused?.entity === "CProduct") {
+      nextContext.lastProductIds = [focused.id];
+      nextContext.lastProduct = {
+        id: focused.id,
+        slug: focused.record?.productslug,
+        name: getItemTitle("CProduct", focused.record),
+      };
+    }
   }
 
-  // 6) Reply (your existing logic is unchanged)
+  // 6) Reply (extended to support non-product entities)
   let baseReply = "";
   if (intent === "availability") {
-    baseReply = hasMatch
+    baseReply = hasProductMatch
       ? "Yes — we have matching fabrics in our catalogue. Do you want details?"
       : "I couldn’t find an exact match in our catalogue. Can you share GSM, content (cotton/poly), and weave (poplin/twill/denim)?";
-  } else if (intent === "details") {
-    if (!hasMatch && !refersToPrev) baseReply = "Which fabric should I describe? Share the name/code/slug (or color + weave + GSM).";
-    else if (focused) {
-      const lines = [];
-      lines.push(pickFirstNonEmpty(focused.productTitle, focused.name, getFabricCode(focused)));
-      const code = getFabricCode(focused);
-      if (code) lines.push(`Fabric Code: ${code}`);
-
-      const bits = [];
-      if (focused.category) bits.push(cleanStr(focused.category));
-      if (focused.gsm) bits.push(`${cleanStr(focused.gsm)} GSM`);
-      const content = toArr(focused.content).filter(Boolean).join(", ");
-      if (content) bits.push(content);
-      const structure = toArr(focused.structure).filter(Boolean).join(", ");
-      if (structure) bits.push(structure);
-      const finish = toArr(focused.finish).filter(Boolean).join(", ");
-      if (finish) bits.push(finish);
-      const colors = toArr(focused.color).filter(Boolean).slice(0, 4).join(", ");
-      if (colors) bits.push(colors);
-      if (bits.length) lines.push(bits.join(" · "));
-
-      const url = getFrontendUrlForProduct(focused);
-      if (url) lines.push(url);
-
-      baseReply = lines.join("\n");
-    } else baseReply = "Which fabric should I describe?";
   } else if (intent === "recommend") {
-    if (hasMatch) {
-      const top3 = ranked
+    if (hasProductMatch) {
+      const top3 = rankedProducts
         .filter((x) => x.score > 0)
         .slice(0, 3)
-        .map(({ p }) => {
+        .map(({ it }) => {
+          const p = it.record;
           const title = pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p));
           const code = getFabricCode(p);
           const url = getFrontendUrlForProduct(p);
@@ -883,9 +1251,51 @@ async function handleChatMessage(req, res) {
         });
 
       baseReply = `Here are a few matching options:\n${top3.join("\n")}\n\nWant details for the best match?`;
-    } else baseReply = "I couldn’t find close matches. Tell me color, GSM range, content, and end-use (shirts/dresses/uniforms).";
+    } else {
+      baseReply = "I couldn’t find close matches. Tell me color, GSM range, content, and end-use (shirts/dresses/uniforms).";
+    }
+  } else if (intent === "details") {
+    if (!focused) {
+      baseReply = "Which item should I describe? Share the name/title (or a keyword).";
+    } else if (focused.entity === "CProduct") {
+      const p = focused.record;
+      const lines = [];
+      lines.push(pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p)));
+      const code = getFabricCode(p);
+      if (code) lines.push(`Fabric Code: ${code}`);
+
+      const bits = [];
+      if (p.category) bits.push(cleanStr(p.category));
+      if (p.gsm) bits.push(`${cleanStr(p.gsm)} GSM`);
+      const content = toArr(p.content).filter(Boolean).join(", ");
+      if (content) bits.push(content);
+      const structure = toArr(p.structure).filter(Boolean).join(", ");
+      if (structure) bits.push(structure);
+      const finish = toArr(p.finish).filter(Boolean).join(", ");
+      if (finish) bits.push(finish);
+      const colors = toArr(p.color).filter(Boolean).slice(0, 4).join(", ");
+      if (colors) bits.push(colors);
+      if (bits.length) lines.push(bits.join(" · "));
+
+      const url = getFrontendUrlForProduct(p);
+      if (url) lines.push(url);
+
+      baseReply = lines.join("\n");
+    } else {
+      // NEW: non-product detail response
+      baseReply = buildNonProductDetailsReply(focused.entity, focused.record);
+    }
   } else {
-    baseReply = "Tell me what fabric you’re looking for (color, weave/structure, GSM, content). I’ll check our catalogue.";
+    // Unknown/smalltalk/etc: if we have any non-product match, show it briefly
+    if (hasAnyMatch && topAll) {
+      if (topAll.entity === "CProduct") {
+        baseReply = "Tell me what fabric you’re looking for (color, weave/structure, GSM, content). I’ll check our catalogue.";
+      } else {
+        baseReply = buildNonProductDetailsReply(topAll.entity, topAll.record);
+      }
+    } else {
+      baseReply = "Tell me what you’re looking for (fabric details or company-related query). I’ll check and respond.";
+    }
   }
 
   const missingField = nextMissingContactField(mergedContact);
@@ -897,7 +1307,6 @@ async function handleChatMessage(req, res) {
 
   if (openaiAvailable) {
     try {
-      // ✅ ONLY CHANGE: inject env-driven extra instructions into system prompt
       const extra = getChatExtraInstructions();
 
       const system =
@@ -921,16 +1330,26 @@ async function handleChatMessage(req, res) {
   const out = {
     ok: true,
     replyText,
+
+    // keep old field for frontend compatibility
     suggestions,
+
+    // NEW: multi-entity suggestions (optional)
+    suggestionsV2,
+
     context: nextContext,
     meta: {
       ts: nowIso(),
       intent,
-      topScore,
+      topScore: topAllScore,
       openaiUsed: openaiParseOk && openaiAvailable,
       leadId: cleanStr(nextContext.leadId) || null,
       language,
       detail,
+
+      // NEW: debug info (safe)
+      chatEntities: getChatEntities(),
+      fetchErrors: fetchErrors.length ? fetchErrors : undefined,
     },
   };
 
