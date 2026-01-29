@@ -1,7 +1,7 @@
 const { espoRequest } = require("./espoClient");
 const { attachCollections, attachRelatedEntities } = require("../utils/espo");
 
-/* ------------------------------ ENV helpers (NEW) ------------------------------ */
+/* ------------------------------ ENV helpers ------------------------------ */
 function cleanStr(v) {
   if (v === null || v === undefined) return "";
   return String(v).trim();
@@ -16,7 +16,6 @@ function parseCsvEnvList(envKey, fallback = []) {
     .map((x) => cleanStr(x))
     .filter(Boolean);
 
-  // remove duplicates while preserving order
   const seen = new Set();
   const out = [];
   for (const x of list) {
@@ -28,7 +27,71 @@ function parseCsvEnvList(envKey, fallback = []) {
   return out.length ? out : fallback;
 }
 
-// Default fallback fields if env not set
+/* ------------------------------ Text normalization ------------------------------ */
+// fixes: "Nokia-607" vs "Nokia-607" vs "Nokia–607"
+function normText(v) {
+  return cleanStr(v)
+    .normalize("NFKC")
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-") // all hyphen-like chars => "-"
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function eqLoose(a, b) {
+  return normText(a) === normText(b);
+}
+
+function includesLoose(hay, needle) {
+  const h = normText(hay);
+  const n = normText(needle);
+  return !!h && !!n && h.includes(n);
+}
+
+/* ------------------------------ Paging helper ------------------------------ */
+// Fetch ALL records for list endpoints (safe for 120 records; scalable)
+async function fetchAllRecords(entityName, { orderBy, order, select } = {}) {
+  const pageSize = Number(process.env.ESPO_LIST_PAGE_SIZE || 200);
+  const maxTotal = Number(process.env.ESPO_LIST_MAX_TOTAL || 5000);
+
+  let offset = 0;
+  let all = [];
+  let total = null;
+
+  while (true) {
+    const query = {
+      maxSize: pageSize,
+      offset,
+    };
+
+    if (orderBy) query.orderBy = orderBy;
+    if (order) query.order = order;
+    if (select) query.select = select;
+
+    const data = await espoRequest(`/${entityName}`, { query });
+
+    const list = data?.list ?? [];
+    const t = typeof data?.total === "number" ? data.total : null;
+
+    if (total === null && t !== null) total = t;
+
+    all = all.concat(list);
+    offset += list.length;
+
+    // stop conditions
+    if (list.length === 0) break;
+    if (total !== null && offset >= total) break;
+    if (all.length >= maxTotal) break; // safety cap
+    if (list.length < pageSize) break;
+  }
+
+  return {
+    list: all,
+    total: total !== null ? total : all.length,
+  };
+}
+
+/* ------------------------------ Collection fields ------------------------------ */
 const DEFAULT_COLLECTION_SELECT_FIELDS = [
   "id",
   "name",
@@ -39,13 +102,12 @@ const DEFAULT_COLLECTION_SELECT_FIELDS = [
   "collectionaltTextVideo",
 ];
 
-// ✅ Collection fields now fully controlled by .env
 const COLLECTION_SELECT_FIELDS = parseCsvEnvList(
   "ESPO_COLLECTION_SELECT_FIELDS",
   DEFAULT_COLLECTION_SELECT_FIELDS
 );
 
-// NEW: Bulk populate using EspoCRM's "in" operator - much faster!
+/* ------------------------------ Bulk populate ------------------------------ */
 const populateRelatedDataBulk = async (records, entityName, populateFields = []) => {
   console.log(
     `[populateRelatedDataBulk] Called for ${entityName} with ${records.length} records`
@@ -55,23 +117,20 @@ const populateRelatedDataBulk = async (records, entityName, populateFields = [])
     return records;
   }
 
-  // Separate collection from other entities for optimized handling
   const collectionConfig = populateFields.find((f) => f.fieldName === "collection");
   const otherConfigs = populateFields.filter((f) => f.fieldName !== "collection");
 
   let result = [...records];
 
-  // ✅ Handle collections with fields driven by env
   if (collectionConfig) {
     result = await attachCollections(result, {
       idField: collectionConfig.idField || "collectionId",
       targetField: "collection",
       collectionEntity: collectionConfig.relatedEntity || "CCollection",
-      select: COLLECTION_SELECT_FIELDS, // ✅ dynamic from .env
+      select: COLLECTION_SELECT_FIELDS,
     });
   }
 
-  // Handle other entities (accounts, users, etc.) in bulk
   if (otherConfigs.length > 0) {
     const entityConfigs = otherConfigs.map((config) => ({
       idField: config.idField || `${config.fieldName}Id`,
@@ -92,40 +151,28 @@ const populateRelatedDataBulk = async (records, entityName, populateFields = [])
   return result;
 };
 
-// LEGACY: Keep old function for backward compatibility (but mark as deprecated)
 const populateRelatedData = async (records, entityName, populateFields = []) => {
   console.warn(
     "[DEPRECATED] Using old populateRelatedData - consider switching to populateRelatedDataBulk"
   );
-
-  // For now, just call the new bulk function
   return populateRelatedDataBulk(records, entityName, populateFields);
 };
 
-// Configuration for entity relationships
+/* ------------------------------ Populate config ------------------------------ */
 const getEntityPopulateConfig = (entityName) => {
   const configs = {
     CProduct: [
-      {
-        fieldName: "collection",
-        relatedEntity: "CCollection",
-        idField: "collectionId",
-      },
+      { fieldName: "collection", relatedEntity: "CCollection", idField: "collectionId" },
       { fieldName: "account", relatedEntity: "Account", idField: "accountId" },
       { fieldName: "createdBy", relatedEntity: "User", idField: "createdById" },
-      {
-        fieldName: "modifiedBy",
-        relatedEntity: "User",
-        idField: "modifiedById",
-      },
+      { fieldName: "modifiedBy", relatedEntity: "User", idField: "modifiedById" },
     ],
-    // Add more entity configurations as needed
   };
 
   return configs[entityName] || [];
 };
 
-// Generic controller factory that creates CRUD operations for any entity
+/* ------------------------------ Controller factory ------------------------------ */
 const createEntityController = (entityName) => {
   // Get all records
   const getAllRecords = async (req, res) => {
@@ -134,44 +181,32 @@ const createEntityController = (entityName) => {
       const limit = Number(req.query.limit || 20);
       const offset = (page - 1) * limit;
 
-      // Always populate for CProduct, otherwise check query parameter
       const populate =
         entityName === "CProduct" ||
         req.query.populate === "true" ||
         req.query.populate === "1";
 
-      // Special filtering for product entity - filter by merchTags containing "ecatalogue"
+      // ✅ Product special filter: merchTags contains "ecatalogue"
       if (
         entityName.toLowerCase() === "product" ||
         entityName.toLowerCase() === "cproduct"
       ) {
-        // Get more records to filter through
-        const data = await espoRequest(`/${entityName}`, {
-          query: {
-            maxSize: 200, // Get more records to filter through
-            offset: 0,
-            orderBy: req.query.orderBy,
-            order: req.query.order,
-            select: req.query.select,
-          },
+        // fetch ALL (paged) instead of only 200
+        const data = await fetchAllRecords(entityName, {
+          orderBy: req.query.orderBy,
+          order: req.query.order,
+          select: req.query.select,
         });
 
-        // Filter products that have "ecatalogue" in merchTags
         const filteredRecords = (data?.list ?? []).filter((record) => {
           const merchTags = record.merchTags;
           if (!merchTags || !Array.isArray(merchTags)) return false;
-
-          return merchTags.some(
-            (tag) => tag && tag.toString().toLowerCase() === "ecatalogue"
-          );
+          return merchTags.some((tag) => eqLoose(tag, "ecatalogue"));
         });
 
-        // Apply pagination to filtered results
-        const startIndex = offset;
-        const endIndex = startIndex + limit;
-        let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+        const paginatedRecordsRaw = filteredRecords.slice(offset, offset + limit);
+        let paginatedRecords = paginatedRecordsRaw;
 
-        // Populate related data if requested or if CProduct
         if (populate) {
           const populateConfig = getEntityPopulateConfig(entityName);
           paginatedRecords = await populateRelatedDataBulk(
@@ -187,26 +222,23 @@ const createEntityController = (entityName) => {
           total: filteredRecords.length,
           entity: entityName,
           filtered: "merchTags contains ecatalogue",
+          pagination: {
+            page,
+            limit,
+            totalPages: Math.ceil(filteredRecords.length / limit),
+          },
         });
       }
 
-      // ✅ Special filtering for blog entity
-      // condition:
-      // 1) status must be Approved
-      // 2) publishedAt must be <= now (past or current). future dates and null must not come
+      // ✅ Blog filter: status=Approved AND publishedAt<=now
       if (
         entityName.toLowerCase() === "blog" ||
         entityName.toLowerCase() === "cblog"
       ) {
-        // Get more records to filter through (same approach like product)
-        const data = await espoRequest(`/${entityName}`, {
-          query: {
-            maxSize: 200,
-            offset: 0,
-            orderBy: req.query.orderBy,
-            order: req.query.order,
-            select: req.query.select,
-          },
+        const data = await fetchAllRecords(entityName, {
+          orderBy: req.query.orderBy,
+          order: req.query.order,
+          select: req.query.select,
         });
 
         const now = new Date();
@@ -228,7 +260,7 @@ const createEntityController = (entityName) => {
         };
 
         const filteredRecords = (data?.list ?? []).filter((record) => {
-          const status = (record.status ?? "").toString().toLowerCase();
+          const status = normText(record.status ?? "");
           if (status !== "approved") return false;
 
           const pub = parseEspoDate(record.publishedAt);
@@ -237,9 +269,8 @@ const createEntityController = (entityName) => {
           return pub.getTime() <= now.getTime();
         });
 
-        const startIndex = offset;
-        const endIndex = startIndex + limit;
-        let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+        const paginatedRecordsRaw = filteredRecords.slice(offset, offset + limit);
+        let paginatedRecords = paginatedRecordsRaw;
 
         if (populate) {
           const populateConfig = getEntityPopulateConfig(entityName);
@@ -256,10 +287,15 @@ const createEntityController = (entityName) => {
           total: filteredRecords.length,
           entity: entityName,
           filtered: "status=Approved AND publishedAt<=now",
+          pagination: {
+            page,
+            limit,
+            totalPages: Math.ceil(filteredRecords.length / limit),
+          },
         });
       }
 
-      // Default behavior for all other entities
+      // Default behavior (Espo paginated)
       const data = await espoRequest(`/${entityName}`, {
         query: {
           maxSize: limit,
@@ -282,11 +318,14 @@ const createEntityController = (entityName) => {
         data: records,
         total: Math.max(0, data?.total ?? 0),
         entity: entityName,
+        pagination: {
+          page,
+          limit,
+          totalPages: Math.ceil((data?.total ?? 0) / limit),
+        },
       });
     } catch (e) {
-      res
-        .status(e.status || 500)
-        .json({ success: false, error: e.data || e.message });
+      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
     }
   };
 
@@ -299,7 +338,6 @@ const createEntityController = (entityName) => {
         req.query.populate === "1";
 
       const data = await espoRequest(`/${entityName}/${req.params.id}`);
-
       let record = data;
 
       if (populate && record) {
@@ -314,13 +352,10 @@ const createEntityController = (entityName) => {
 
       res.json({ success: true, data: record, entity: entityName });
     } catch (e) {
-      res
-        .status(e.status || 500)
-        .json({ success: false, error: e.data || e.message });
+      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
     }
   };
 
-  // Create new record
   const createRecord = async (req, res) => {
     try {
       const data = await espoRequest(`/${entityName}`, {
@@ -329,13 +364,10 @@ const createEntityController = (entityName) => {
       });
       res.json({ success: true, data, entity: entityName });
     } catch (e) {
-      res
-        .status(e.status || 500)
-        .json({ success: false, error: e.data || e.message });
+      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
     }
   };
 
-  // Update record by ID
   const updateRecord = async (req, res) => {
     try {
       const data = await espoRequest(`/${entityName}/${req.params.id}`, {
@@ -344,27 +376,20 @@ const createEntityController = (entityName) => {
       });
       res.json({ success: true, data, entity: entityName });
     } catch (e) {
-      res
-        .status(e.status || 500)
-        .json({ success: false, error: e.data || e.message });
+      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
     }
   };
 
-  // Delete record by ID
   const deleteRecord = async (req, res) => {
     try {
-      await espoRequest(`/${entityName}/${req.params.id}`, {
-        method: "DELETE",
-      });
+      await espoRequest(`/${entityName}/${req.params.id}`, { method: "DELETE" });
       res.json({ success: true, entity: entityName });
     } catch (e) {
-      res
-        .status(e.status || 500)
-        .json({ success: false, error: e.data || e.message });
+      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
     }
   };
 
-  // Get records by field value (for array fields like tags)
+  // ✅ Get records by field value (NOW scans ALL records + loose compare)
   const getRecordsByFieldValue = async (req, res) => {
     const { fieldName, fieldValue } = req.params;
 
@@ -385,46 +410,27 @@ const createEntityController = (entityName) => {
         req.query.populate === "true" ||
         req.query.populate === "1";
 
-      const queryParams = {
-        maxSize: 100,
-        offset: 0,
-      };
-
-      if (req.query.orderBy) {
-        queryParams.orderBy = req.query.orderBy;
-        queryParams.order = req.query.order || "desc";
-      }
-
-      if (req.query.select) {
-        queryParams.select = req.query.select;
-      }
-
-      const data = await espoRequest(`/${entityName}`, {
-        query: queryParams,
+      // fetch ALL (paged) instead of maxSize:100
+      const data = await fetchAllRecords(entityName, {
+        orderBy: req.query.orderBy,
+        order: req.query.order,
+        select: req.query.select,
       });
 
       const filteredRecords = (data?.list ?? []).filter((record) => {
-        const recordFieldValue = record[fieldName];
-        if (!recordFieldValue) return false;
+        const v = record[fieldName];
+        if (v === null || v === undefined) return false;
 
-        if (Array.isArray(recordFieldValue)) {
-          return recordFieldValue.some(
-            (item) =>
-              item &&
-              item.toString().trim().toLowerCase() === fieldValue.toLowerCase()
-          );
-        } else if (typeof recordFieldValue === "string") {
-          return recordFieldValue.trim().toLowerCase() === fieldValue.toLowerCase();
-        } else {
-          return (
-            recordFieldValue.toString().toLowerCase() === fieldValue.toLowerCase()
-          );
+        if (Array.isArray(v)) {
+          return v.some((item) => eqLoose(item, fieldValue));
         }
+
+        // strings/numbers/booleans
+        return eqLoose(v, fieldValue);
       });
 
-      const startIndex = offset;
-      const endIndex = startIndex + limit;
-      let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
+      const paginatedRecordsRaw = filteredRecords.slice(offset, offset + limit);
+      let paginatedRecords = paginatedRecordsRaw;
 
       if (populate) {
         const populateConfig = getEntityPopulateConfig(entityName);
@@ -451,11 +457,7 @@ const createEntityController = (entityName) => {
     } catch (e) {
       console.error(
         `[getRecordsByFieldValue] Error for ${entityName}/${req.params.fieldName}/${req.params.fieldValue}:`,
-        {
-          status: e.status,
-          message: e.message,
-          data: e.data,
-        }
+        { status: e.status, message: e.message, data: e.data }
       );
       res.status(e.status || 500).json({
         success: false,
@@ -465,7 +467,7 @@ const createEntityController = (entityName) => {
     }
   };
 
-  // Get unique values for any field
+  // ✅ Unique values (NOW scans ALL records)
   const getUniqueFieldValues = async (req, res) => {
     try {
       const { fieldName } = req.params;
@@ -477,12 +479,7 @@ const createEntityController = (entityName) => {
         });
       }
 
-      const data = await espoRequest(`/${entityName}`, {
-        query: {
-          maxSize: 100,
-          offset: 0,
-        },
-      });
+      const data = await fetchAllRecords(entityName);
 
       const uniqueValues = new Set();
 
@@ -492,19 +489,12 @@ const createEntityController = (entityName) => {
         if (fieldValue !== null && fieldValue !== undefined) {
           if (Array.isArray(fieldValue)) {
             fieldValue.forEach((item) => {
-              if (item && item.toString().trim() !== "") {
-                uniqueValues.add(item.toString().trim());
-              }
+              const t = cleanStr(item);
+              if (t) uniqueValues.add(t);
             });
-          } else if (typeof fieldValue === "string") {
-            const trimmedValue = fieldValue.trim();
-            if (trimmedValue !== "" && trimmedValue !== "N/A") {
-              uniqueValues.add(trimmedValue);
-            }
-          } else if (typeof fieldValue === "number") {
-            uniqueValues.add(fieldValue.toString());
-          } else if (typeof fieldValue === "boolean") {
-            uniqueValues.add(fieldValue.toString());
+          } else {
+            const t = cleanStr(fieldValue);
+            if (t && t !== "N/A") uniqueValues.add(t);
           }
         }
       });
@@ -512,9 +502,7 @@ const createEntityController = (entityName) => {
       const sortedValues = Array.from(uniqueValues).sort((a, b) => {
         const numA = parseFloat(a);
         const numB = parseFloat(b);
-        if (!isNaN(numA) && !isNaN(numB)) {
-          return numA - numB;
-        }
+        if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
         return a.localeCompare(b);
       });
 
@@ -533,7 +521,7 @@ const createEntityController = (entityName) => {
     }
   };
 
-  // Search products by keywords or productTitle
+  // ✅ Search products (NOW scans ALL + loose includes)
   const getBySearchProduct = async (req, res) => {
     try {
       const { searchValue } = req.params;
@@ -549,153 +537,70 @@ const createEntityController = (entityName) => {
       const limit = Number(req.query.limit || 20);
       const offset = (page - 1) * limit;
 
-      console.log(
-        `[getBySearchProduct] Searching for: "${searchValue}" in entity: ${entityName}`
-      );
+      const searchTerm = normText(searchValue);
 
+      const data = await fetchAllRecords(entityName, {
+        orderBy: req.query.orderBy,
+        order: req.query.order,
+        select: req.query.select,
+      });
+
+      let records = data?.list ?? [];
+
+      // if product: keep your ecatalogue-only logic
       if (
         entityName.toLowerCase() === "product" ||
         entityName.toLowerCase() === "cproduct"
       ) {
-        const data = await espoRequest(`/${entityName}`, {
-          query: {
-            maxSize: 200,
-            offset: 0,
-            orderBy: req.query.orderBy,
-            order: req.query.order,
-            select: req.query.select,
-          },
-        });
-
-        const ecatalogueProducts = (data?.list ?? []).filter((record) => {
+        records = records.filter((record) => {
           const merchTags = record.merchTags;
           if (!merchTags || !Array.isArray(merchTags)) return false;
-          return merchTags.some(
-            (tag) => tag && tag.toString().toLowerCase() === "ecatalogue"
-          );
-        });
-
-        const filteredRecords = ecatalogueProducts.filter((record) => {
-          const keywords = record.keywords;
-          const productTitle = record.productTitle;
-          const name = record.name;
-          const searchTerm = searchValue.toLowerCase().trim();
-
-          let keywordsMatch = false;
-          if (keywords && Array.isArray(keywords)) {
-            keywordsMatch = keywords.some(
-              (keyword) =>
-                keyword && keyword.toString().toLowerCase().includes(searchTerm)
-            );
-          }
-
-          let titleMatch = false;
-          if (productTitle && typeof productTitle === "string") {
-            titleMatch = productTitle.toLowerCase().includes(searchTerm);
-          }
-
-          let nameMatch = false;
-          if (name && typeof name === "string") {
-            nameMatch = name.toLowerCase().includes(searchTerm);
-          }
-
-          return keywordsMatch || titleMatch || nameMatch;
-        });
-
-        const startIndex = offset;
-        const endIndex = startIndex + limit;
-        let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
-
-        const populateConfig = getEntityPopulateConfig(entityName);
-        paginatedRecords = await populateRelatedDataBulk(
-          paginatedRecords,
-          entityName,
-          populateConfig
-        );
-
-        return res.json({
-          success: true,
-          data: paginatedRecords,
-          total: filteredRecords.length,
-          entity: entityName,
-          searchValue: searchValue,
-          filtered: "merchTags contains ecatalogue AND search term",
-          pagination: {
-            page,
-            limit,
-            totalPages: Math.ceil(filteredRecords.length / limit),
-          },
-        });
-      } else {
-        const data = await espoRequest(`/${entityName}`, {
-          query: {
-            maxSize: 200,
-            offset: 0,
-            orderBy: req.query.orderBy || "createdAt",
-            order: req.query.order || "desc",
-          },
-        });
-
-        const filteredRecords = (data?.list ?? []).filter((record) => {
-          const keywords = record.keywords;
-          const productTitle = record.productTitle;
-          const name = record.name;
-          const searchTerm = searchValue.toLowerCase().trim();
-
-          let keywordsMatch = false;
-          if (keywords && Array.isArray(keywords)) {
-            keywordsMatch = keywords.some(
-              (keyword) =>
-                keyword && keyword.toString().toLowerCase().includes(searchTerm)
-            );
-          }
-
-          let titleMatch = false;
-          if (productTitle && typeof productTitle === "string") {
-            titleMatch = productTitle.toLowerCase().includes(searchTerm);
-          }
-
-          let nameMatch = false;
-          if (name && typeof name === "string") {
-            nameMatch = name.toLowerCase().includes(searchTerm);
-          }
-
-          return keywordsMatch || titleMatch || nameMatch;
-        });
-
-        const startIndex = offset;
-        const endIndex = startIndex + limit;
-        let paginatedRecords = filteredRecords.slice(startIndex, endIndex);
-
-        const populateConfig = getEntityPopulateConfig(entityName);
-        paginatedRecords = await populateRelatedDataBulk(
-          paginatedRecords,
-          entityName,
-          populateConfig
-        );
-
-        res.json({
-          success: true,
-          data: paginatedRecords,
-          total: filteredRecords.length,
-          entity: entityName,
-          searchValue: searchValue,
-          pagination: {
-            page,
-            limit,
-            totalPages: Math.ceil(filteredRecords.length / limit),
-          },
+          return merchTags.some((tag) => eqLoose(tag, "ecatalogue"));
         });
       }
+
+      const filteredRecords = records.filter((record) => {
+        const keywords = record.keywords;
+        const productTitle = record.productTitle;
+        const name = record.name;
+
+        let keywordsMatch = false;
+        if (keywords && Array.isArray(keywords)) {
+          keywordsMatch = keywords.some((k) => includesLoose(k, searchTerm));
+        }
+
+        const titleMatch = productTitle ? includesLoose(productTitle, searchTerm) : false;
+        const nameMatch = name ? includesLoose(name, searchTerm) : false;
+
+        return keywordsMatch || titleMatch || nameMatch;
+      });
+
+      const paginatedRecordsRaw = filteredRecords.slice(offset, offset + limit);
+      let paginatedRecords = paginatedRecordsRaw;
+
+      const populateConfig = getEntityPopulateConfig(entityName);
+      paginatedRecords = await populateRelatedDataBulk(
+        paginatedRecords,
+        entityName,
+        populateConfig
+      );
+
+      return res.json({
+        success: true,
+        data: paginatedRecords,
+        total: filteredRecords.length,
+        entity: entityName,
+        searchValue,
+        pagination: {
+          page,
+          limit,
+          totalPages: Math.ceil(filteredRecords.length / limit),
+        },
+      });
     } catch (e) {
       console.error(
         `[getBySearchProduct] Error searching for "${req.params.searchValue}" in ${entityName}:`,
-        {
-          status: e.status,
-          message: e.message,
-          data: e.data,
-          url: e.url || "unknown",
-        }
+        { status: e.status, message: e.message, data: e.data, url: e.url || "unknown" }
       );
       res.status(e.status || 500).json({
         success: false,
