@@ -295,7 +295,7 @@ function normalizePhoneForEspo(input) {
   const raw = cleanStr(input);
   if (!raw) return "";
 
-  const defaultCC = cleanStr(process.env.DEFAULT_PHONE_COUNTRY_CODE || "+91");
+  const defaultCC = cleanStr(process.env.DEFAULT_PHONE_COUNTRY_CODE);
   const startsPlus = raw.startsWith("+");
   const digits = raw.replace(/[^\d]/g, "");
   if (!digits) return "";

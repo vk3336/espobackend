@@ -7,6 +7,7 @@ const express = require("express");
 const cors = require("cors");
 const { createEntityRoutes } = require("./routes/generic");
 const chatRoutes = require("./routes/chat");
+const adminChatRoutes = require("./routes/adminChat");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -69,6 +70,9 @@ apiBaseNames.forEach((baseName) => {
 
   // Chat assistant endpoint(s)
   app.use(`/${baseName}/chat`, chatRoutes());
+    // Admin audit chat
+  app.use(`/${baseName}/admin-chat`, adminChatRoutes());
+
 });
 
 // Basic health check route
