@@ -49,7 +49,6 @@ function pickFirstNonEmpty(...vals) {
 
 function stripHtml(html) {
   const s = String(html || "");
-  // simple + safe enough for snippets
   return s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
@@ -62,13 +61,142 @@ function parseCsvEnv(name) {
     .filter(Boolean);
 }
 
-/* ------------------------------ NEW: choose chat entities dynamically ------------------------------ */
-/**
- * Priority:
- *  1) CHAT_ENTITIES (recommended)
- *  2) ESPO_ENTITIES minus Lead
- *  3) fallback => CProduct
- */
+/** handles string OR array values */
+function hasValue(v) {
+  if (Array.isArray(v)) return v.some((x) => !!cleanStr(x));
+  return !!cleanStr(v);
+}
+
+/** normalize multi-enum fields (string/array/json/csv) -> string[] */
+function normalizeMultiEnum(v) {
+  if (Array.isArray(v)) {
+    const a = v.map((x) => cleanStr(x)).filter(Boolean);
+    return a.length ? a : [];
+  }
+
+  const s = cleanStr(v);
+  if (!s) return [];
+
+  // If some caller passed JSON array as string
+  try {
+    const parsed = JSON.parse(s);
+    if (Array.isArray(parsed)) {
+      const a = parsed.map((x) => cleanStr(x)).filter(Boolean);
+      return a.length ? a : [];
+    }
+  } catch {
+    // ignore
+  }
+
+  // Split csv/pipe
+  const parts = s
+    .split(/[|,]/g)
+    .map((x) => cleanStr(x))
+    .filter(Boolean);
+
+  return parts.length ? parts : [s];
+}
+
+/* ------------------------------ safe caps (IMPORTANT) ------------------------------ */
+function envInt(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+const LEAD_UA_MAX = envInt("CHAT_UA_MAX_CHARS", 255);          // ✅ default 255
+const LEAD_URL_MAX = envInt("CHAT_PAGE_URL_MAX_CHARS", 500);   // ✅ default 500
+const LEAD_IP_MAX = envInt("CHAT_IP_MAX_CHARS", 64);           // ✅ default 64
+const RETRY_TRIM_MAX = envInt("CHAT_RETRY_TRIM_MAX_CHARS", 180);
+
+/* ------------------------------ Lead browser fields helpers ------------------------------ */
+function capStr(v, max) {
+  const s = cleanStr(v);
+  if (!s) return "";
+  const n = Number(max);
+  if (Number.isFinite(n) && n > 0 && s.length > n) return s.slice(0, n);
+  return s;
+}
+
+function normalizeIp(ip) {
+  let s = cleanStr(ip);
+  if (!s) return "";
+  if (s.startsWith("::ffff:")) s = s.replace("::ffff:", "");
+
+  // nicer local display (IPv6 loopback -> IPv4 loopback)
+  if (s === "::1") s = "127.0.0.1";
+
+  return s;
+}
+
+function firstFromXForwardedFor(xff) {
+  const raw = cleanStr(xff);
+  if (!raw) return "";
+  const first = raw.split(",")[0];
+  return normalizeIp(first);
+}
+
+function getClientIp(req) {
+  const cf = normalizeIp(req?.headers?.["cf-connecting-ip"]);
+  if (cf) return cf;
+
+  const realIp = normalizeIp(req?.headers?.["x-real-ip"]);
+  if (realIp) return realIp;
+
+  const xff = firstFromXForwardedFor(req?.headers?.["x-forwarded-for"]);
+  if (xff) return xff;
+
+  const ip = normalizeIp(req?.ip);
+  if (ip) return ip;
+
+  const ra = normalizeIp(req?.connection?.remoteAddress);
+  if (ra) return ra;
+
+  return "";
+}
+
+function getUserAgent(req) {
+  // ✅ prefer frontend-provided UA (body), fallback to header
+  const fromBody =
+    req?.body?.cUserAgent ||
+    req?.body?.userAgent ||
+    req?.body?.ua ||
+    req?.body?.browser?.userAgent ||
+    req?.body?.meta?.userAgent ||
+    req?.body?.context?.contactInfo?.cUserAgent;
+
+  const fromHeader = req?.headers?.["user-agent"];
+
+  const ua = pickFirstNonEmpty(fromBody, fromHeader);
+
+  // ✅ IMPORTANT: cap to match Espo maxLength
+  return capStr(ua, LEAD_UA_MAX);
+}
+
+function getPageUrl(req) {
+  // ✅ prefer frontend-provided URL (body), fallback to referer, fallback to context.contactInfo
+  const fromBody =
+    req?.body?.cPageUrl ||
+    req?.body?.pageUrl ||
+    req?.body?.pageURL ||
+    req?.body?.page ||
+    req?.body?.browser?.pageUrl ||
+    req?.body?.browser?.pageURL ||
+    req?.body?.meta?.pageUrl;
+
+  const fromHeader =
+    req?.headers?.["x-page-url"] ||
+    req?.headers?.["referer"] ||
+    req?.headers?.["referrer"];
+
+  const fromCtx = req?.body?.context?.contactInfo?.cPageUrl;
+
+  const url = pickFirstNonEmpty(fromBody, fromHeader, fromCtx);
+
+  // ✅ IMPORTANT: cap to match Espo maxLength
+  return capStr(url, LEAD_URL_MAX);
+}
+
+/* ------------------------------ choose chat entities dynamically ------------------------------ */
 function getChatEntities() {
   const chat = parseCsvEnv("CHAT_ENTITIES");
   if (chat.length) return chat;
@@ -110,7 +238,7 @@ function createLimiter(max) {
     });
 }
 
-/* ------------------------------ NEW: env-driven reply instructions ------------------------------ */
+/* ------------------------------ env-driven reply instructions ------------------------------ */
 function getChatExtraInstructions() {
   const raw = String(process.env.CHAT_EXTRA_INSTRUCTIONS || "");
   const text = raw.replace(/\\n/g, "\n").trim();
@@ -140,12 +268,6 @@ function getFrontendUrlForProduct(p) {
   return joinUrl(base, slug);
 }
 
-/**
- * Optional: per-entity base URLs (only if you set them).
- * - AGE_COLLECTION_URL
- * - AGE_BLOG_URL
- * - AGE_AUTHOR_URL
- */
 function getFrontendUrlForEntity(entity, rec) {
   const e = cleanStr(entity);
 
@@ -287,10 +409,6 @@ async function openaiText(system, user, maxTokens = 420) {
 }
 
 /* ------------------------------ Contact capture helpers ------------------------------ */
-/**
- * Normalize phone into something Espo validator accepts (often E.164).
- * DEFAULT_PHONE_COUNTRY_CODE example: +91
- */
 function normalizePhoneForEspo(input) {
   const raw = cleanStr(input);
   if (!raw) return "";
@@ -305,10 +423,6 @@ function normalizePhoneForEspo(input) {
   if (digits.length === 11 && digits.startsWith("0") && defaultCC) return `${defaultCC}${digits.slice(1)}`;
   if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
   return digits;
-}
-
-function digitsOnlyPhone(s) {
-  return normalizePhoneForEspo(s);
 }
 
 function extractEmailHeuristic(text) {
@@ -357,11 +471,17 @@ function splitNameParts(fullName) {
   };
 }
 
+/**
+ * Merge contact info:
+ * - normal string fields: "first non-empty wins"
+ * - multi-enum fields: keep arrays (first non-empty wins)
+ */
 function mergeContactInfo(base, incoming) {
   const b = base && typeof base === "object" ? base : {};
   const i = incoming && typeof incoming === "object" ? incoming : {};
   const out = { ...b };
 
+  // normal string-ish fields
   const fields = [
     "source",
     "salutationName",
@@ -377,14 +497,26 @@ function mergeContactInfo(base, incoming) {
     "addressCountry",
     "addressPostalCode",
     "opportunityAmountCurrency",
-    "cBusinessType",
-    "cFabricCategory",
+
+    // Lead browser fields
+    "cPageUrl",
+    "cClientIP",
+    "cUserAgent",
   ];
 
   for (const f of fields) {
-    if (!cleanStr(out[f]) && cleanStr(i[f])) out[f] = cleanStr(i[f]);
+    if (!hasValue(out[f]) && hasValue(i[f])) out[f] = cleanStr(i[f]);
   }
 
+  // multi-enum fields (keep as array)
+  if (!hasValue(out.cBusinessType) && hasValue(i.cBusinessType)) {
+    out.cBusinessType = normalizeMultiEnum(i.cBusinessType);
+  }
+  if (!hasValue(out.cFabricCategory) && hasValue(i.cFabricCategory)) {
+    out.cFabricCategory = normalizeMultiEnum(i.cFabricCategory);
+  }
+
+  // numeric
   if (
     (out.opportunityAmount === null || out.opportunityAmount === undefined || out.opportunityAmount === "") &&
     (i.opportunityAmount !== null && i.opportunityAmount !== undefined && i.opportunityAmount !== "")
@@ -421,15 +553,15 @@ function enrichContactFromHeuristics(message, contactInfo) {
 
 function hasAnyContactData(c) {
   return (
-    !!cleanStr(c?.firstName) ||
-    !!cleanStr(c?.lastName) ||
-    !!cleanStr(c?.emailAddress) ||
-    !!cleanStr(c?.phoneNumber) ||
-    !!cleanStr(c?.accountName) ||
-    !!cleanStr(c?.addressCountry) ||
-    !!cleanStr(c?.addressCity) ||
-    !!cleanStr(c?.cBusinessType) ||
-    !!cleanStr(c?.cFabricCategory)
+    hasValue(c?.firstName) ||
+    hasValue(c?.lastName) ||
+    hasValue(c?.emailAddress) ||
+    hasValue(c?.phoneNumber) ||
+    hasValue(c?.accountName) ||
+    hasValue(c?.addressCountry) ||
+    hasValue(c?.addressCity) ||
+    hasValue(c?.cBusinessType) ||
+    hasValue(c?.cFabricCategory)
   );
 }
 
@@ -446,7 +578,7 @@ function nextMissingContactField(contactInfo) {
     "cFabricCategory",
   ];
   for (const f of order) {
-    if (!cleanStr(c[f])) return f;
+    if (!hasValue(c[f])) return f;
   }
   return null;
 }
@@ -499,7 +631,17 @@ function buildLeadPayload(contactInfo) {
 
   const name = fullName || cleanStr(c.accountName) || "Chat Visitor";
   const assignedUserId = cleanStr(process.env.ESPO_ASSIGNED_USER_ID) || undefined;
+
   const normalizedPhone = normalizePhoneForEspo(c.phoneNumber);
+
+  // ✅ multi-enum arrays (important if your Espo fields are multiEnum)
+  const cBusinessTypeArr = normalizeMultiEnum(c.cBusinessType);
+  const cFabricCategoryArr = normalizeMultiEnum(c.cFabricCategory);
+
+  // ✅ IMPORTANT: hard cap browser fields again right before sending
+  const uaSafe = capStr(cleanStr(c.cUserAgent), LEAD_UA_MAX);
+  const urlSafe = capStr(cleanStr(c.cPageUrl), LEAD_URL_MAX);
+  const ipSafe = capStr(cleanStr(c.cClientIP), LEAD_IP_MAX);
 
   const payload = {
     source,
@@ -531,8 +673,14 @@ function buildLeadPayload(contactInfo) {
         ? undefined
         : Number(c.opportunityAmount),
 
-    cBusinessType: cleanStr(c.cBusinessType) || undefined,
-    cFabricCategory: cleanStr(c.cFabricCategory) || undefined,
+    // ✅ arrays if present (multiEnum)
+    cBusinessType: cBusinessTypeArr.length ? cBusinessTypeArr : undefined,
+    cFabricCategory: cFabricCategoryArr.length ? cFabricCategoryArr : undefined,
+
+    // ✅ browser fields (capped)
+    cPageUrl: urlSafe || undefined,
+    cClientIP: ipSafe || undefined,
+    cUserAgent: uaSafe || undefined,
 
     description: `Chat lead updated @ ${nowIso()}`,
   };
@@ -558,6 +706,41 @@ async function leadUpdate(id, payload) {
   }
 }
 
+/**
+ * Espo maxLength retry helper:
+ * - If Espo says a field is too long, trim harder once.
+ * - If still failing, drop the field and retry once.
+ */
+function getEspoValidationFailure(err) {
+  const mt = err?.data?.messageTranslation;
+  if (!mt) return null;
+  if (mt.label !== "validationFailure") return null;
+
+  const field = mt?.data?.field || null;
+  const type = mt?.data?.type || null;
+  return field && type ? { field, type } : null;
+}
+
+function makeRetryPayload(payload, failure) {
+  if (!failure || failure.type !== "maxLength") return null;
+
+  const field = failure.field;
+  if (!field || !(field in payload)) return null;
+
+  const next = { ...payload };
+
+  // trim harder once
+  const v = cleanStr(next[field]);
+  if (v) next[field] = capStr(v, RETRY_TRIM_MAX);
+
+  // if still same (already short) OR empty, drop it
+  if (!cleanStr(next[field]) || cleanStr(next[field]) === v) {
+    delete next[field];
+  }
+
+  return next;
+}
+
 async function upsertLeadSingleRecord(context, contactInfo) {
   const src = cleanStr(contactInfo?.source) || "Chat Bot";
   if (src !== "Chat Bot") return { ok: true, skipped: true, reason: "source_not_chatbot" };
@@ -566,37 +749,96 @@ async function upsertLeadSingleRecord(context, contactInfo) {
   const payload = buildLeadPayload(contactInfo);
   const existingId = cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId);
 
+  // UPDATE
   if (existingId) {
     try {
       await leadUpdate(existingId, payload);
       context.leadId = existingId;
       return { ok: true, mode: "update", id: existingId };
     } catch (e) {
+      // retry on maxLength once
+      const failure = getEspoValidationFailure(e);
+      const retryPayload = makeRetryPayload(payload, failure);
+
+      if (retryPayload) {
+        try {
+          await leadUpdate(existingId, retryPayload);
+          context.leadId = existingId;
+          return { ok: true, mode: "update_retry", id: existingId, retriedField: failure.field };
+        } catch (e2) {
+          return {
+            ok: false,
+            mode: "update_failed",
+            id: existingId,
+            status: e2?.status || null,
+            error: e2?.data || e2?.message || String(e2),
+            payloadSent: retryPayload,
+          };
+        }
+      }
+
       return {
         ok: false,
         mode: "update_failed",
         id: existingId,
         status: e?.status || null,
         error: e?.data || e?.message || String(e),
+        payloadSent: payload,
       };
     }
   }
 
-  const created = await leadCreate(payload);
-  const newId = cleanStr(created?.id);
-  if (newId) {
-    context.leadId = newId;
-    return { ok: true, mode: "create", id: newId };
-  }
+  // CREATE
+  try {
+    const created = await leadCreate(payload);
+    const newId = cleanStr(created?.id);
+    if (newId) {
+      context.leadId = newId;
+      return { ok: true, mode: "create", id: newId };
+    }
+    return { ok: false, mode: "create_no_id", id: null, raw: created, payloadSent: payload };
+  } catch (e) {
+    // retry on maxLength once
+    const failure = getEspoValidationFailure(e);
+    const retryPayload = makeRetryPayload(payload, failure);
 
-  return { ok: false, mode: "create_no_id", id: null, raw: created };
+    if (retryPayload) {
+      try {
+        const created2 = await leadCreate(retryPayload);
+        const newId2 = cleanStr(created2?.id);
+        if (newId2) {
+          context.leadId = newId2;
+          return { ok: true, mode: "create_retry", id: newId2, retriedField: failure.field };
+        }
+        return { ok: false, mode: "create_retry_no_id", id: null, raw: created2, payloadSent: retryPayload };
+      } catch (e2) {
+        return {
+          ok: false,
+          mode: "create_failed",
+          id: null,
+          status: e2?.status || null,
+          error: e2?.data || e2?.message || String(e2),
+          payloadSent: retryPayload,
+        };
+      }
+    }
+
+    return {
+      ok: false,
+      mode: "create_failed",
+      id: null,
+      status: e?.status || null,
+      error: e?.data || e?.message || String(e),
+      payloadSent: payload,
+    };
+  }
 }
 
 /* ------------------------------ Product fetching & scoring ------------------------------ */
 function buildProductText(p) {
   const parts = [];
   parts.push(pickFirstNonEmpty(p.name, p.productTitle));
-  parts.push(getFabricCode(p));
+  parts.push(pickFirstNonEmpty(p.fabricCode, p.vendorFabricCode));
   parts.push(pickFirstNonEmpty(p.category));
   parts.push(toArr(p.color).map(cleanStr).join(" "));
   parts.push(toArr(p.content).map(cleanStr).join(" "));
@@ -662,7 +904,7 @@ function scoreProduct(p, query) {
   return score;
 }
 
-/* ------------------------------ NEW: multi-entity knowledge items ------------------------------ */
+/* ------------------------------ multi-entity helpers ------------------------------ */
 function itemKey(entity, id) {
   const e = cleanStr(entity);
   const i = cleanStr(id);
@@ -678,7 +920,6 @@ function buildGenericRecordText(entity, rec) {
   const parts = [];
   parts.push(entity);
 
-  // prioritized common fields (fast wins)
   const priorityKeys = [
     "title",
     "name",
@@ -718,7 +959,6 @@ function buildGenericRecordText(entity, rec) {
     else if (Array.isArray(v)) parts.push(v.map((x) => stripHtml(cleanStr(x))).filter(Boolean).join(" "));
   }
 
-  // include a little extra: any short primitive fields
   try {
     const keys = Object.keys(rec || {});
     for (const k of keys) {
@@ -759,7 +999,6 @@ function scoreGeneric(entity, rec, query) {
     if (text.includes(t)) score += 2;
   }
 
-  // boost if token hits the title/slug-like fields
   const title = norm(getItemTitle(entity, rec));
   const slug = norm(pickFirstNonEmpty(rec?.slug, rec?.productslug, rec?.collectionslug, rec?.blogslug, rec?.authorslug));
   for (const t of uniq) {
@@ -777,10 +1016,6 @@ function scoreItem(item, query) {
   return scoreGeneric(item.entity, item.record, query);
 }
 
-/**
- * Fetch list for an entity safely:
- * - tries with orderBy/order; if it fails, retries without sorting fields
- */
 async function fetchEntityList(entity) {
   const e = cleanStr(entity);
   if (!e) return [];
@@ -797,8 +1032,7 @@ async function fetchEntityList(entity) {
       query: { maxSize, offset: 0, orderBy, order },
     });
     return Array.isArray(data?.list) ? data.list : [];
-  } catch (err1) {
-    // fallback: no orderBy
+  } catch {
     const data = await espoRequest(`/${e}`, {
       query: { maxSize, offset: 0 },
     });
@@ -806,10 +1040,6 @@ async function fetchEntityList(entity) {
   }
 }
 
-/**
- * NEW: fetch from ALL chat entities + return unified "items"
- * Each item: { entity, id, record }
- */
 async function fetchCandidateItems() {
   const entities = getChatEntities();
 
@@ -825,7 +1055,6 @@ async function fetchCandidateItems() {
         try {
           const list = await fetchEntityList(entity);
 
-          // Optional: keep your merchTag enforcement only for CProduct
           if (entity === "CProduct") {
             const rawTag = process.env.CHAT_REQUIRE_MERCHTAG;
             const requireTag = rawTag === undefined ? "ecatalogue" : norm(rawTag);
@@ -956,12 +1185,11 @@ function normalizeDetail(actionDetail, requestedMode) {
   return "auto";
 }
 
-/* ------------------------------ NEW: details formatting for non-product entities ------------------------------ */
+/* ------------------------------ non-product details formatting ------------------------------ */
 function pickDisplayPairs(entity, rec) {
   const r = rec || {};
   const pairs = [];
 
-  // try common "contact/company" style fields first
   const candidates = [
     ["website", "Website"],
     ["url", "URL"],
@@ -999,7 +1227,6 @@ function pickDisplayPairs(entity, rec) {
     if (pairs.length >= 6) break;
   }
 
-  // If still empty, pick a few short primitive fields
   if (pairs.length < 2) {
     try {
       const keys = Object.keys(r);
@@ -1051,43 +1278,22 @@ async function handleChatMessage(req, res) {
 
   // 1) Parse intent + contact + query
   let action;
-  let openaiParseOk = true;
+  let openaiParseOk = false;
   try {
     action = await parseUserMessageWithOpenAI({ message, context });
+    openaiParseOk = true;
   } catch {
-    openaiParseOk = false;
     action = {
       language: "en",
       intent: "unknown",
       detail: "auto",
       refersToPrevious: false,
-      query: {
-        keywords: [],
-        color: null,
-        weave: null,
-        design: null,
-        structure: null,
-        content: [],
-        gsm: { min: null, max: null },
-      },
+      query: { keywords: [], color: null, weave: null, design: null, structure: null, content: [], gsm: { min: null, max: null } },
       contactInfo: {
-        source: null,
-        salutationName: null,
-        firstName: null,
-        lastName: null,
-        middleName: null,
-        emailAddress: null,
-        phoneNumber: null,
-        accountName: null,
-        addressStreet: null,
-        addressCity: null,
-        addressState: null,
-        addressCountry: null,
-        addressPostalCode: null,
-        opportunityAmountCurrency: null,
-        opportunityAmount: null,
-        cBusinessType: null,
-        cFabricCategory: null,
+        source: null, salutationName: null, firstName: null, lastName: null, middleName: null,
+        emailAddress: null, phoneNumber: null, accountName: null,
+        addressStreet: null, addressCity: null, addressState: null, addressCountry: null, addressPostalCode: null,
+        opportunityAmountCurrency: null, opportunityAmount: null, cBusinessType: null, cFabricCategory: null,
       },
       _openai_error: true,
     };
@@ -1103,23 +1309,35 @@ async function handleChatMessage(req, res) {
   mergedContact = enrichContactFromHeuristics(message, mergedContact);
   mergedContact.source = "Chat Bot";
 
+  // ✅ always capture these 3 and overwrite (latest wins)
+  const pageUrl = getPageUrl(req);
+  const clientIp = capStr(getClientIp(req), LEAD_IP_MAX);
+  const userAgent = getUserAgent(req);
+
+  if (pageUrl) mergedContact.cPageUrl = pageUrl;
+  if (clientIp) mergedContact.cClientIP = clientIp;
+  if (userAgent) mergedContact.cUserAgent = userAgent;
+
   // 3) Preserve leadId
   const nextContext = {
     ...context,
     contactInfo: mergedContact,
     leadId: cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId) || null,
     lastIntent: intent,
-
-    // NEW: multi-entity memory
     lastItems: Array.isArray(context?.lastItems) ? context.lastItems : [],
   };
 
-  // 4) Upsert Lead
+  // 4) Upsert Lead (return debug)
+  let leadUpsert = null;
   try {
-    await upsertLeadSingleRecord(nextContext, mergedContact);
+    leadUpsert = await upsertLeadSingleRecord(nextContext, mergedContact);
   } catch (e) {
-    console.warn("[Lead] upsert failed:", e?.status, e?.data || e?.message || e);
+    leadUpsert = { ok: false, mode: "exception", status: e?.status || null, error: e?.data || e?.message || String(e) };
+    console.warn("[Lead] upsert exception:", leadUpsert);
   }
+
+  // ✅ ensure leadId gets set even if caller didn’t mutate context somehow
+  if (leadUpsert?.ok && leadUpsert?.id) nextContext.leadId = leadUpsert.id;
 
   // 5) Fetch multi-entity knowledge
   let items = [];
@@ -1162,7 +1380,6 @@ async function handleChatMessage(req, res) {
   const hasAnyMatch = !!topAll && topAllScore >= minScore;
   const hasProductMatch = !!topProduct && topProductScore >= minScore;
 
-  // Previous focus logic (multi-entity)
   const lastItems = Array.isArray(nextContext?.lastItems) ? nextContext.lastItems : [];
   const refersToPrev = !!action?.refersToPrevious;
 
@@ -1177,7 +1394,6 @@ async function handleChatMessage(req, res) {
     }
   }
 
-  // Suggestions (keep old product-only shape for frontend safety)
   const suggestions = rankedProducts
     .filter((x) => x.score > 0)
     .slice(0, 6)
@@ -1193,7 +1409,6 @@ async function handleChatMessage(req, res) {
     })
     .filter((s) => !!cleanStr(s.fabricCode));
 
-  // Optional: multi-entity suggestions for future frontend upgrade
   const suggestionsV2 = rankedAll
     .filter((x) => x.score > 0)
     .slice(0, 10)
@@ -1205,30 +1420,22 @@ async function handleChatMessage(req, res) {
       score,
     }));
 
-  // Remember context IDs
   if (intent === "availability" || intent === "recommend") {
-    // keep old behavior for products
     nextContext.lastProductIds = suggestions.map((s) => s.id);
     nextContext.lastProduct = topProduct
       ? { id: topProduct.id, slug: topProduct.record?.productslug, name: getItemTitle("CProduct", topProduct.record) }
       : null;
 
-    // new multi-entity memory (prefer product suggestions if any, else best overall)
     const remember = suggestionsV2.slice(0, 6).map((s) => ({ entity: s.entity, id: s.id }));
     nextContext.lastItems = remember.length ? remember : topAll ? [{ entity: topAll.entity, id: topAll.id }] : [];
   } else if (intent === "details") {
     nextContext.lastItems = focused ? [{ entity: focused.entity, id: focused.id }] : [];
     if (focused?.entity === "CProduct") {
       nextContext.lastProductIds = [focused.id];
-      nextContext.lastProduct = {
-        id: focused.id,
-        slug: focused.record?.productslug,
-        name: getItemTitle("CProduct", focused.record),
-      };
+      nextContext.lastProduct = { id: focused.id, slug: focused.record?.productslug, name: getItemTitle("CProduct", focused.record) };
     }
   }
 
-  // 6) Reply (extended to support non-product entities)
   let baseReply = "";
   if (intent === "availability") {
     baseReply = hasProductMatch
@@ -1282,11 +1489,9 @@ async function handleChatMessage(req, res) {
 
       baseReply = lines.join("\n");
     } else {
-      // NEW: non-product detail response
       baseReply = buildNonProductDetailsReply(focused.entity, focused.record);
     }
   } else {
-    // Unknown/smalltalk/etc: if we have any non-product match, show it briefly
     if (hasAnyMatch && topAll) {
       if (topAll.entity === "CProduct") {
         baseReply = "Tell me what fabric you’re looking for (color, weave/structure, GSM, content). I’ll check our catalogue.";
@@ -1304,6 +1509,7 @@ async function handleChatMessage(req, res) {
 
   let replyText = "";
   const openaiAvailable = !!cleanStr(process.env.OPENAI_API_KEY);
+  let openaiReplyOk = false;
 
   if (openaiAvailable) {
     try {
@@ -1320,6 +1526,7 @@ async function handleChatMessage(req, res) {
 
       const user = `User message: ${message}\n\nReplyPlan: ${safeJson(plan)}\n\nContactQuestion: ${askOne}`;
       replyText = await openaiText(system, user, 420);
+      openaiReplyOk = true;
     } catch {
       replyText = baseReply + (askOne ? `\n\n${askOne}` : "");
     }
@@ -1330,24 +1537,23 @@ async function handleChatMessage(req, res) {
   const out = {
     ok: true,
     replyText,
-
-    // keep old field for frontend compatibility
     suggestions,
-
-    // NEW: multi-entity suggestions (optional)
     suggestionsV2,
-
     context: nextContext,
     meta: {
       ts: nowIso(),
       intent,
       topScore: topAllScore,
-      openaiUsed: openaiParseOk && openaiAvailable,
+
+      openaiUsed: !!(openaiParseOk || openaiReplyOk),
+      openaiParseOk,
+      openaiReplyOk,
+
       leadId: cleanStr(nextContext.leadId) || null,
+      leadUpsert, // ✅ debug
+
       language,
       detail,
-
-      // NEW: debug info (safe)
       chatEntities: getChatEntities(),
       fetchErrors: fetchErrors.length ? fetchErrors : undefined,
     },
