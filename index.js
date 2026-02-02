@@ -8,6 +8,7 @@ const cors = require("cors");
 const { createEntityRoutes } = require("./routes/generic");
 const chatRoutes = require("./routes/chat");
 const adminChatRoutes = require("./routes/adminChat");
+const indexnowRoutes = require("./routes/indexnow");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,7 +30,7 @@ app.use(
   cors({
     origin: corsOrigins,
     credentials: true,
-  })
+  }),
 );
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -43,7 +44,7 @@ app.use((req, res, next) => {
     console.log(
       `[${new Date().toISOString()}] ${req.method} ${req.url} - ${
         res.statusCode
-      } (${duration}ms)`
+      } (${duration}ms)`,
     );
   });
 
@@ -70,9 +71,11 @@ apiBaseNames.forEach((baseName) => {
 
   // Chat assistant endpoint(s)
   app.use(`/${baseName}/chat`, chatRoutes());
-    // Admin audit chat
+  // Admin audit chat
   app.use(`/${baseName}/admin-chat`, adminChatRoutes());
 
+  // IndexNow endpoints
+  app.use(`/${baseName}/indexnow`, indexnowRoutes);
 });
 
 // Basic health check route
@@ -147,7 +150,7 @@ app.use((err, req, res, next) => {
       status: err.status,
       stack: err.stack,
       data: err.data,
-    }
+    },
   );
 
   // Don't expose internal error details in production
