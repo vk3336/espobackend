@@ -9,6 +9,7 @@ const { createEntityRoutes } = require("./routes/generic");
 const chatRoutes = require("./routes/chat");
 const adminChatRoutes = require("./routes/adminChat");
 const indexnowRoutes = require("./routes/indexnow");
+const { startIndexNowScheduler } = require("./utils/indexnowScheduler");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -185,5 +186,13 @@ if (require.main === module) {
         console.log(`  - /${baseName}/${entityRoute} (${entity})`);
       });
     });
+
+    // Start IndexNow scheduler
+    startIndexNowScheduler();
   });
+}
+
+// Start IndexNow scheduler for serverless environments
+if (process.env.NODE_ENV === "production") {
+  startIndexNowScheduler();
 }

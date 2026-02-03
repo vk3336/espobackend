@@ -1,165 +1,44 @@
 const express = require("express");
 const router = express.Router();
+const { submitIndexNow } = require("../utils/indexnow");
 const {
-  submitIndexNow,
-  submitProductUrls,
-  submitMultiHostUrls,
-  buildEntityUrls,
-} = require("../utils/indexnow");
-
-/**
- * Manual URL submission endpoint
- * POST /indexnow/submit
- * Body: { urls: ["https://example.com/page1", "https://example.com/page2"] }
- */
-router.post("/submit", async (req, res) => {
-  try {
-    if (process.env.INDEXNOW_ENABLED !== "true") {
-      return res.status(200).json({
-        ok: true,
-        disabled: true,
-        message: "IndexNow is disabled",
-      });
-    }
-
-    // Optional: Protect this endpoint with a token
-    const authToken =
-      req.headers["x-indexnow-token"] || req.headers["authorization"];
-    if (
-      process.env.INDEXNOW_AUTH_TOKEN &&
-      authToken !== process.env.INDEXNOW_AUTH_TOKEN
-    ) {
-      return res.status(403).json({
-        ok: false,
-        error: "Unauthorized",
-      });
-    }
-
-    const { urls } = req.body;
-
-    if (!Array.isArray(urls) || urls.length === 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "URLs array is required and must not be empty",
-      });
-    }
-
-    const result = await submitIndexNow({
-      endpoint: process.env.INDEXNOW_ENDPOINT,
-      host: process.env.INDEXNOW_HOST,
-      key: process.env.INDEXNOW_KEY,
-      keyLocation: process.env.INDEXNOW_KEY_LOCATION,
-      urls,
-    });
-
-    res.json(result);
-  } catch (error) {
-    console.error("[IndexNow] Submit error:", error);
-    res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
-  }
-});
-
-/**
- * Submit product URLs by slugs
- * POST /indexnow/products
- * Body: { slugs: ["product-1", "product-2"], action: "updated" }
- */
-router.post("/products", async (req, res) => {
-  try {
-    if (process.env.INDEXNOW_ENABLED !== "true") {
-      return res.status(200).json({
-        ok: true,
-        disabled: true,
-        message: "IndexNow is disabled",
-      });
-    }
-
-    const { slugs, action = "updated" } = req.body;
-
-    if (!Array.isArray(slugs) || slugs.length === 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "Product slugs array is required and must not be empty",
-      });
-    }
-
-    const result = await submitProductUrls(slugs, action);
-    res.json(result);
-  } catch (error) {
-    console.error("[IndexNow] Product submit error:", error);
-    res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
-  }
-});
-
-/**
- * Submit URLs to multiple hosts (multi-domain setup)
- * POST /indexnow/multi-host
- * Body: { urls: ["https://example.com/page1"] }
- */
-router.post("/multi-host", async (req, res) => {
-  try {
-    if (process.env.INDEXNOW_ENABLED !== "true") {
-      return res.status(200).json({
-        ok: true,
-        disabled: true,
-        message: "IndexNow is disabled",
-      });
-    }
-
-    const { urls } = req.body;
-
-    if (!Array.isArray(urls) || urls.length === 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "URLs array is required and must not be empty",
-      });
-    }
-
-    const results = await submitMultiHostUrls(urls);
-    res.json({ ok: true, results });
-  } catch (error) {
-    console.error("[IndexNow] Multi-host submit error:", error);
-    res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
-  }
-});
+  triggerManualIndexNow,
+  testSitemapParsing,
+} = require("../utils/indexnowScheduler");
 
 /**
  * Health check for IndexNow configuration
  * GET /indexnow/health
  */
 router.get("/health", (req, res) => {
+  const sitemapUrl =
+    process.env.INDEXNOW_SITEMAP_URL ||
+    `https://${process.env.INDEXNOW_HOST}/sitemap.xml`;
+
   const config = {
-    enabled: process.env.INDEXNOW_ENABLED === "true",
+    schedulerEnabled: process.env.INDEXNOW_SCHEDULER_ENABLED === "true",
     endpoint: process.env.INDEXNOW_ENDPOINT || "not configured",
     host: process.env.INDEXNOW_HOST || "not configured",
     keyConfigured: !!process.env.INDEXNOW_KEY,
-    keyLocation: process.env.INDEXNOW_KEY_LOCATION || "default (root)",
-    multiHost: !!process.env.INDEXNOW_HOSTS_JSON,
-    authProtected: !!process.env.INDEXNOW_AUTH_TOKEN,
+    sitemapUrl: sitemapUrl,
+    schedule: process.env.INDEXNOW_SCHEDULE || "0 2 * * *",
+    timezone: process.env.INDEXNOW_TIMEZONE || "UTC",
   };
 
   const isValid =
-    config.enabled &&
+    config.schedulerEnabled &&
     config.endpoint !== "not configured" &&
     config.host !== "not configured" &&
-    config.keyConfigured;
+    config.keyConfigured &&
+    config.sitemapUrl;
 
   res.json({
     ok: true,
     valid: isValid,
     config,
     message: isValid
-      ? "IndexNow is properly configured"
-      : "IndexNow configuration incomplete",
+      ? "IndexNow scheduler is properly configured"
+      : "IndexNow scheduler configuration incomplete",
   });
 });
 
@@ -188,5 +67,91 @@ router.get("/key", (req, res) => {
     ],
   });
 });
+
+/**
+ * Manual trigger for scheduled IndexNow (for testing)
+ * POST /indexnow/trigger
+ */
+router.post("/trigger", async (req, res) => {
+  try {
+    if (process.env.INDEXNOW_SCHEDULER_ENABLED !== "true") {
+      return res.status(200).json({
+        ok: true,
+        disabled: true,
+        message: "IndexNow scheduler is disabled",
+      });
+    }
+
+    // Optional: Protect this endpoint with a token
+    const authToken =
+      req.headers["x-indexnow-token"] || req.headers["authorization"];
+    if (
+      process.env.INDEXNOW_AUTH_TOKEN &&
+      authToken !== process.env.INDEXNOW_AUTH_TOKEN
+    ) {
+      return res.status(403).json({
+        ok: false,
+        error: "Unauthorized",
+      });
+    }
+
+    console.log("[IndexNow API] Manual trigger requested");
+
+    // Trigger the scheduler manually (don't await to avoid timeout)
+    triggerManualIndexNow().catch((error) => {
+      console.error("[IndexNow API] Manual trigger failed:", error.message);
+    });
+
+    res.json({
+      ok: true,
+      message: "IndexNow manual trigger started",
+      note: "Check server logs for progress",
+    });
+  } catch (error) {
+    console.error("[IndexNow API] Trigger error:", error);
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * Test sitemap parsing (for debugging)
+ * GET /indexnow/test-sitemap
+ */
+router.get("/test-sitemap", async (req, res) => {
+  try {
+    if (process.env.INDEXNOW_SCHEDULER_ENABLED !== "true") {
+      return res.status(200).json({
+        ok: true,
+        disabled: true,
+        message: "IndexNow scheduler is disabled",
+      });
+    }
+
+    console.log("[IndexNow API] Sitemap test requested");
+
+    const urls = await testSitemapParsing();
+
+    res.json({
+      ok: true,
+      sitemapUrl:
+        process.env.INDEXNOW_SITEMAP_URL ||
+        `https://${process.env.INDEXNOW_HOST}/sitemap.xml`,
+      urlsFound: urls.length,
+      sampleUrls: urls.slice(0, 10),
+      message: `Found ${urls.length} URLs in sitemap`,
+    });
+  } catch (error) {
+    console.error("[IndexNow API] Sitemap test error:", error);
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+module.exports = router;
 
 module.exports = router;
