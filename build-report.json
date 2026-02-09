@@ -1,0 +1,176 @@
+{
+  "timestamp": "2026-02-09T10:43:41.219Z",
+  "status": "success",
+  "summary": {
+    "total": 40,
+    "passed": 39,
+    "warnings": 1,
+    "failed": 0
+  },
+  "checks": [
+    {
+      "status": "pass",
+      "message": "Found: index.js"
+    },
+    {
+      "status": "pass",
+      "message": "Found: package.json"
+    },
+    {
+      "status": "pass",
+      "message": "Found: .env.example"
+    },
+    {
+      "status": "pass",
+      "message": "Found: controller/espoClient.js"
+    },
+    {
+      "status": "pass",
+      "message": "Found: controller/genericController.js"
+    },
+    {
+      "status": "pass",
+      "message": "Found: utils/cache.js"
+    },
+    {
+      "status": "pass",
+      "message": "Found: utils/cacheWarmer.js"
+    },
+    {
+      "status": "pass",
+      "message": "Found: routes/cache.js"
+    },
+    {
+      "status": "pass",
+      "message": "Found .env file"
+    },
+    {
+      "status": "pass",
+      "message": "ESPO_BASE_URL is configured"
+    },
+    {
+      "status": "pass",
+      "message": "ESPO_API_KEY is configured"
+    },
+    {
+      "status": "pass",
+      "message": "ESPO_ENTITIES is configured"
+    },
+    {
+      "status": "warn",
+      "message": "Optional environment variable not set: PORT"
+    },
+    {
+      "status": "pass",
+      "message": "CORS_ORIGIN is configured"
+    },
+    {
+      "status": "pass",
+      "message": "RATE_LIMIT_MAX_REQUESTS is configured"
+    },
+    {
+      "status": "pass",
+      "message": "CACHE_REFRESH_INTERVAL_HOURS is configured"
+    },
+    {
+      "status": "pass",
+      "message": "Dependency installed: express"
+    },
+    {
+      "status": "pass",
+      "message": "Dependency installed: cors"
+    },
+    {
+      "status": "pass",
+      "message": "Dependency installed: dotenv"
+    },
+    {
+      "status": "pass",
+      "message": "Dependency installed: node-cache"
+    },
+    {
+      "status": "pass",
+      "message": "Dependency installed: node-cron"
+    },
+    {
+      "status": "pass",
+      "message": "node_modules directory exists"
+    },
+    {
+      "status": "pass",
+      "message": "Syntax OK: index.js"
+    },
+    {
+      "status": "pass",
+      "message": "Syntax OK: controller/espoClient.js"
+    },
+    {
+      "status": "pass",
+      "message": "Syntax OK: controller/genericController.js"
+    },
+    {
+      "status": "pass",
+      "message": "Syntax OK: utils/cache.js"
+    },
+    {
+      "status": "pass",
+      "message": "Syntax OK: utils/cacheWarmer.js"
+    },
+    {
+      "status": "pass",
+      "message": "Syntax OK: routes/cache.js"
+    },
+    {
+      "status": "pass",
+      "message": "Route file exists: routes/generic.js"
+    },
+    {
+      "status": "pass",
+      "message": "Route file exists: routes/chat.js"
+    },
+    {
+      "status": "pass",
+      "message": "Route file exists: routes/adminChat.js"
+    },
+    {
+      "status": "pass",
+      "message": "Route file exists: routes/indexnow.js"
+    },
+    {
+      "status": "pass",
+      "message": "Route file exists: routes/cache.js"
+    },
+    {
+      "status": "pass",
+      "message": "Cache utility functions available"
+    },
+    {
+      "status": "pass",
+      "message": "Cache set function available"
+    },
+    {
+      "status": "pass",
+      "message": "Cache stats function available"
+    },
+    {
+      "status": "pass",
+      "message": "Git repository initialized"
+    },
+    {
+      "status": "pass",
+      "message": ".gitignore includes node_modules"
+    },
+    {
+      "status": "pass",
+      "message": ".gitignore includes .env"
+    },
+    {
+      "status": "pass",
+      "message": "README.md exists"
+    }
+  ],
+  "errors": [],
+  "warnings": [
+    "Optional environment variable not set: PORT"
+  ]
+}

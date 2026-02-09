@@ -160,7 +160,7 @@ app.get("/health", (req, res) => {
 });
 
 // Error handling middleware
-app.use((err, req, res, next) => {
+app.use((err, req, res, _next) => {
   console.error(
     `[${new Date().toISOString()}] Error on ${req.method} ${req.url}:`,
     {

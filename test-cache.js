@@ -4,7 +4,7 @@
  */
 
 const {
-  cache,
+  cache: _cache,
   getCacheKey,
   getCache,
   setCache,

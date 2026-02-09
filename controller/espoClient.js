@@ -66,7 +66,7 @@ async function espoRequest(path, { method = "GET", body, query } = {}) {
     if (query && typeof query === "object") {
       for (const [k, v] of Object.entries(query)) {
         if (v !== undefined && v !== null && v !== "")
-          url.searchParams.set(k, String(v));
+          {url.searchParams.set(k, String(v));}
       }
     }
 

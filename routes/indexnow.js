@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { submitIndexNow } = require("../utils/indexnow");
+const { submitIndexNow: _submitIndexNow } = require("../utils/indexnow");
 const {
   triggerManualIndexNow,
   testSitemapParsing,

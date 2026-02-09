@@ -49,7 +49,10 @@ function pickFirstNonEmpty(...vals) {
 
 function stripHtml(html) {
   const s = String(html || "");
-  return s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  return s
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function parseCsvEnv(name) {
@@ -103,9 +106,9 @@ function envInt(name, fallback) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-const LEAD_UA_MAX = envInt("CHAT_UA_MAX_CHARS", 255);          // ✅ default 255
-const LEAD_URL_MAX = envInt("CHAT_PAGE_URL_MAX_CHARS", 500);   // ✅ default 500
-const LEAD_IP_MAX = envInt("CHAT_IP_MAX_CHARS", 64);           // ✅ default 64
+const LEAD_UA_MAX = envInt("CHAT_UA_MAX_CHARS", 255); // ✅ default 255
+const LEAD_URL_MAX = envInt("CHAT_PAGE_URL_MAX_CHARS", 500); // ✅ default 500
+const LEAD_IP_MAX = envInt("CHAT_IP_MAX_CHARS", 64); // ✅ default 64
 const RETRY_TRIM_MAX = envInt("CHAT_RETRY_TRIM_MAX_CHARS", 180);
 
 /* ------------------------------ Lead browser fields helpers ------------------------------ */
@@ -275,7 +278,11 @@ function getFrontendUrlForEntity(entity, rec) {
 
   if (e === "CCollection") {
     const base = cleanStr(process.env.AGE_COLLECTION_URL);
-    const slug = pickFirstNonEmpty(rec?.collectionslug, rec?.slug, rec?.productslug);
+    const slug = pickFirstNonEmpty(
+      rec?.collectionslug,
+      rec?.slug,
+      rec?.productslug,
+    );
     return base && slug ? joinUrl(base, slug) : "";
   }
 
@@ -311,7 +318,9 @@ function extractOutputText(openaiResponseJson) {
         }
       }
     }
-  } catch {}
+  } catch {
+    // Ignore parsing errors
+  }
   return "";
 }
 
@@ -420,7 +429,9 @@ function normalizePhoneForEspo(input) {
 
   if (startsPlus) return `+${digits}`;
   if (digits.length === 10 && defaultCC) return `${defaultCC}${digits}`;
-  if (digits.length === 11 && digits.startsWith("0") && defaultCC) return `${defaultCC}${digits.slice(1)}`;
+  if (digits.length === 11 && digits.startsWith("0") && defaultCC) {
+    return `${defaultCC}${digits.slice(1)}`;
+  }
   if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
   return digits;
 }
@@ -462,8 +473,12 @@ function splitNameParts(fullName) {
   const n = cleanStr(fullName).replace(/\s+/g, " ").trim();
   if (!n) return { firstName: null, middleName: null, lastName: null };
   const parts = n.split(" ").filter(Boolean);
-  if (parts.length === 1) return { firstName: parts[0], middleName: null, lastName: null };
-  if (parts.length === 2) return { firstName: parts[0], middleName: null, lastName: parts[1] };
+  if (parts.length === 1) {
+    return { firstName: parts[0], middleName: null, lastName: null };
+  }
+  if (parts.length === 2) {
+    return { firstName: parts[0], middleName: null, lastName: parts[1] };
+  }
   return {
     firstName: parts[0],
     middleName: parts.slice(1, -1).join(" "),
@@ -518,14 +533,20 @@ function mergeContactInfo(base, incoming) {
 
   // numeric
   if (
-    (out.opportunityAmount === null || out.opportunityAmount === undefined || out.opportunityAmount === "") &&
-    (i.opportunityAmount !== null && i.opportunityAmount !== undefined && i.opportunityAmount !== "")
+    (out.opportunityAmount === null ||
+      out.opportunityAmount === undefined ||
+      out.opportunityAmount === "") &&
+    i.opportunityAmount !== null &&
+    i.opportunityAmount !== undefined &&
+    i.opportunityAmount !== ""
   ) {
     const n = Number(i.opportunityAmount);
     out.opportunityAmount = Number.isFinite(n) ? n : out.opportunityAmount;
   }
 
-  if (cleanStr(out.phoneNumber)) out.phoneNumber = normalizePhoneForEspo(out.phoneNumber);
+  if (cleanStr(out.phoneNumber)) {
+    out.phoneNumber = normalizePhoneForEspo(out.phoneNumber);
+  }
   return out;
 }
 
@@ -624,13 +645,18 @@ function buildLeadPayload(contactInfo) {
   const c = contactInfo || {};
   const source = "Chat Bot";
 
-  const fullName = [cleanStr(c.firstName), cleanStr(c.middleName), cleanStr(c.lastName)]
+  const fullName = [
+    cleanStr(c.firstName),
+    cleanStr(c.middleName),
+    cleanStr(c.lastName),
+  ]
     .filter(Boolean)
     .join(" ")
     .trim();
 
   const name = fullName || cleanStr(c.accountName) || "Chat Visitor";
-  const assignedUserId = cleanStr(process.env.ESPO_ASSIGNED_USER_ID) || undefined;
+  const assignedUserId =
+    cleanStr(process.env.ESPO_ASSIGNED_USER_ID) || undefined;
 
   const normalizedPhone = normalizePhoneForEspo(c.phoneNumber);
 
@@ -667,9 +693,12 @@ function buildLeadPayload(contactInfo) {
     addressCountry: cleanStr(c.addressCountry) || undefined,
     addressPostalCode: cleanStr(c.addressPostalCode) || undefined,
 
-    opportunityAmountCurrency: cleanStr(c.opportunityAmountCurrency) || undefined,
+    opportunityAmountCurrency:
+      cleanStr(c.opportunityAmountCurrency) || undefined,
     opportunityAmount:
-      c.opportunityAmount === null || c.opportunityAmount === undefined || c.opportunityAmount === ""
+      c.opportunityAmount === null ||
+      c.opportunityAmount === undefined ||
+      c.opportunityAmount === ""
         ? undefined
         : Number(c.opportunityAmount),
 
@@ -685,8 +714,15 @@ function buildLeadPayload(contactInfo) {
     description: `Chat lead updated @ ${nowIso()}`,
   };
 
-  Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-  if (payload.opportunityAmount !== undefined && !Number.isFinite(payload.opportunityAmount)) delete payload.opportunityAmount;
+  Object.keys(payload).forEach(
+    (k) => payload[k] === undefined && delete payload[k],
+  );
+  if (
+    payload.opportunityAmount !== undefined &&
+    !Number.isFinite(payload.opportunityAmount)
+  ) {
+    delete payload.opportunityAmount;
+  }
 
   return payload;
 }
@@ -697,10 +733,16 @@ async function leadCreate(payload) {
 
 async function leadUpdate(id, payload) {
   try {
-    return await espoRequest(`/${LEAD_ENTITY}/${id}`, { method: "PUT", body: payload });
+    return await espoRequest(`/${LEAD_ENTITY}/${id}`, {
+      method: "PUT",
+      body: payload,
+    });
   } catch (e) {
     if (e?.status === 405 || e?.status === 400) {
-      return espoRequest(`/${LEAD_ENTITY}/${id}`, { method: "PATCH", body: payload });
+      return espoRequest(`/${LEAD_ENTITY}/${id}`, {
+        method: "PATCH",
+        body: payload,
+      });
     }
     throw e;
   }
@@ -743,11 +785,16 @@ function makeRetryPayload(payload, failure) {
 
 async function upsertLeadSingleRecord(context, contactInfo) {
   const src = cleanStr(contactInfo?.source) || "Chat Bot";
-  if (src !== "Chat Bot") return { ok: true, skipped: true, reason: "source_not_chatbot" };
-  if (!hasAnyContactData(contactInfo)) return { ok: true, skipped: true, reason: "no_contact_yet" };
+  if (src !== "Chat Bot") {
+    return { ok: true, skipped: true, reason: "source_not_chatbot" };
+  }
+  if (!hasAnyContactData(contactInfo)) {
+    return { ok: true, skipped: true, reason: "no_contact_yet" };
+  }
 
   const payload = buildLeadPayload(contactInfo);
-  const existingId = cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId);
+  const existingId =
+    cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId);
 
   // UPDATE
   if (existingId) {
@@ -764,7 +811,12 @@ async function upsertLeadSingleRecord(context, contactInfo) {
         try {
           await leadUpdate(existingId, retryPayload);
           context.leadId = existingId;
-          return { ok: true, mode: "update_retry", id: existingId, retriedField: failure.field };
+          return {
+            ok: true,
+            mode: "update_retry",
+            id: existingId,
+            retriedField: failure.field,
+          };
         } catch (e2) {
           return {
             ok: false,
@@ -796,7 +848,13 @@ async function upsertLeadSingleRecord(context, contactInfo) {
       context.leadId = newId;
       return { ok: true, mode: "create", id: newId };
     }
-    return { ok: false, mode: "create_no_id", id: null, raw: created, payloadSent: payload };
+    return {
+      ok: false,
+      mode: "create_no_id",
+      id: null,
+      raw: created,
+      payloadSent: payload,
+    };
   } catch (e) {
     // retry on maxLength once
     const failure = getEspoValidationFailure(e);
@@ -808,9 +866,20 @@ async function upsertLeadSingleRecord(context, contactInfo) {
         const newId2 = cleanStr(created2?.id);
         if (newId2) {
           context.leadId = newId2;
-          return { ok: true, mode: "create_retry", id: newId2, retriedField: failure.field };
+          return {
+            ok: true,
+            mode: "create_retry",
+            id: newId2,
+            retriedField: failure.field,
+          };
         }
-        return { ok: false, mode: "create_retry_no_id", id: null, raw: created2, payloadSent: retryPayload };
+        return {
+          ok: false,
+          mode: "create_retry_no_id",
+          id: null,
+          raw: created2,
+          payloadSent: retryPayload,
+        };
       } catch (e2) {
         return {
           ok: false,
@@ -897,7 +966,9 @@ function scoreProduct(p, query) {
     if (Number.isFinite(gsmVal)) {
       const min = query.gsm.min !== null ? Number(query.gsm.min) : null;
       const max = query.gsm.max !== null ? Number(query.gsm.max) : null;
-      if ((min === null || gsmVal >= min) && (max === null || gsmVal <= max)) score += 4;
+      if ((min === null || gsmVal >= min) && (max === null || gsmVal <= max)) {
+        score += 4;
+      }
     }
   }
 
@@ -912,8 +983,16 @@ function itemKey(entity, id) {
 }
 
 function getItemTitle(entity, rec) {
-  if (entity === "CProduct") return pickFirstNonEmpty(rec?.productTitle, rec?.name, getFabricCode(rec));
-  return pickFirstNonEmpty(rec?.title, rec?.name, rec?.subject, rec?.heading, rec?.label);
+  if (entity === "CProduct") {
+    return pickFirstNonEmpty(rec?.productTitle, rec?.name, getFabricCode(rec));
+  }
+  return pickFirstNonEmpty(
+    rec?.title,
+    rec?.name,
+    rec?.subject,
+    rec?.heading,
+    rec?.label,
+  );
 }
 
 function buildGenericRecordText(entity, rec) {
@@ -956,7 +1035,14 @@ function buildGenericRecordText(entity, rec) {
     if (v === null || v === undefined) continue;
     if (typeof v === "string") parts.push(stripHtml(v));
     else if (typeof v === "number") parts.push(String(v));
-    else if (Array.isArray(v)) parts.push(v.map((x) => stripHtml(cleanStr(x))).filter(Boolean).join(" "));
+    else if (Array.isArray(v)) {
+      parts.push(
+        v
+          .map((x) => stripHtml(cleanStr(x)))
+          .filter(Boolean)
+          .join(" "),
+      );
+    }
   }
 
   try {
@@ -971,11 +1057,16 @@ function buildGenericRecordText(entity, rec) {
       } else if (typeof v === "number" || typeof v === "boolean") {
         parts.push(String(v));
       } else if (Array.isArray(v)) {
-        const s = v.map((x) => stripHtml(cleanStr(x))).filter(Boolean).join(" ");
+        const s = v
+          .map((x) => stripHtml(cleanStr(x)))
+          .filter(Boolean)
+          .join(" ");
         if (s && s.length <= 180) parts.push(s);
       }
     }
-  } catch {}
+  } catch {
+    // Ignore field processing errors
+  }
 
   return norm(parts.filter(Boolean).join(" \n "));
 }
@@ -1000,7 +1091,15 @@ function scoreGeneric(entity, rec, query) {
   }
 
   const title = norm(getItemTitle(entity, rec));
-  const slug = norm(pickFirstNonEmpty(rec?.slug, rec?.productslug, rec?.collectionslug, rec?.blogslug, rec?.authorslug));
+  const slug = norm(
+    pickFirstNonEmpty(
+      rec?.slug,
+      rec?.productslug,
+      rec?.collectionslug,
+      rec?.blogslug,
+      rec?.authorslug,
+    ),
+  );
   for (const t of uniq) {
     if (!t) continue;
     if (title.includes(t)) score += 6;
@@ -1057,11 +1156,15 @@ async function fetchCandidateItems() {
 
           if (entity === "CProduct") {
             const rawTag = process.env.CHAT_REQUIRE_MERCHTAG;
-            const requireTag = rawTag === undefined ? "ecatalogue" : norm(rawTag);
-            const enforceTag = !!requireTag && !["none", "off", "0"].includes(requireTag);
+            const requireTag =
+              rawTag === undefined ? "ecatalogue" : norm(rawTag);
+            const enforceTag =
+              !!requireTag && !["none", "off", "0"].includes(requireTag);
 
             const filtered = enforceTag
-              ? list.filter((p) => toArr(p.merchTags).map(norm).includes(requireTag))
+              ? list.filter((p) =>
+                  toArr(p.merchTags).map(norm).includes(requireTag),
+                )
               : list;
 
             for (const rec of filtered) {
@@ -1077,10 +1180,14 @@ async function fetchCandidateItems() {
             }
           }
         } catch (e) {
-          errors.push({ entity, status: e?.status || null, error: e?.data || e?.message || String(e) });
+          errors.push({
+            entity,
+            status: e?.status || null,
+            error: e?.data || e?.message || String(e),
+          });
         }
-      })
-    )
+      }),
+    ),
   );
 
   return { items: all, errors };
@@ -1095,7 +1202,14 @@ async function parseUserMessageWithOpenAI({ message, context }) {
       language: { type: "string" },
       intent: {
         type: "string",
-        enum: ["availability", "details", "recommend", "lead", "smalltalk", "unknown"],
+        enum: [
+          "availability",
+          "details",
+          "recommend",
+          "lead",
+          "smalltalk",
+          "unknown",
+        ],
       },
       detail: { type: "string", enum: ["auto", "yesno", "short", "long"] },
       refersToPrevious: { type: "boolean" },
@@ -1112,11 +1226,22 @@ async function parseUserMessageWithOpenAI({ message, context }) {
           gsm: {
             type: "object",
             additionalProperties: false,
-            properties: { min: { type: ["number", "null"] }, max: { type: ["number", "null"] } },
+            properties: {
+              min: { type: ["number", "null"] },
+              max: { type: ["number", "null"] },
+            },
             required: ["min", "max"],
           },
         },
-        required: ["keywords", "color", "weave", "design", "structure", "content", "gsm"],
+        required: [
+          "keywords",
+          "color",
+          "weave",
+          "design",
+          "structure",
+          "content",
+          "gsm",
+        ],
       },
       contactInfo: {
         type: "object",
@@ -1161,7 +1286,14 @@ async function parseUserMessageWithOpenAI({ message, context }) {
         ],
       },
     },
-    required: ["language", "intent", "detail", "refersToPrevious", "query", "contactInfo"],
+    required: [
+      "language",
+      "intent",
+      "detail",
+      "refersToPrevious",
+      "query",
+      "contactInfo",
+    ],
   };
 
   const system =
@@ -1179,9 +1311,18 @@ async function parseUserMessageWithOpenAI({ message, context }) {
 }
 
 function normalizeDetail(actionDetail, requestedMode) {
-  const m = requestedMode === "short" || requestedMode === "long" ? requestedMode : null;
+  const m =
+    requestedMode === "short" || requestedMode === "long"
+      ? requestedMode
+      : null;
   if (m) return m;
-  if (actionDetail === "short" || actionDetail === "long" || actionDetail === "yesno") return actionDetail;
+  if (
+    actionDetail === "short" ||
+    actionDetail === "long" ||
+    actionDetail === "yesno"
+  ) {
+    return actionDetail;
+  }
   return "auto";
 }
 
@@ -1221,7 +1362,10 @@ function pickDisplayPairs(entity, rec) {
     } else if (typeof v === "number") {
       pairs.push([label, String(v)]);
     } else if (Array.isArray(v)) {
-      const s = v.map((x) => stripHtml(cleanStr(x))).filter(Boolean).join(", ");
+      const s = v
+        .map((x) => stripHtml(cleanStr(x)))
+        .filter(Boolean)
+        .join(", ");
       if (s) pairs.push([label, s.length > 260 ? `${s.slice(0, 260)}…` : s]);
     }
     if (pairs.length >= 6) break;
@@ -1242,7 +1386,9 @@ function pickDisplayPairs(entity, rec) {
         }
         if (pairs.length >= 6) break;
       }
-    } catch {}
+    } catch {
+      // Ignore field extraction errors
+    }
   }
 
   return pairs;
@@ -1267,10 +1413,15 @@ function buildNonProductDetailsReply(entity, rec) {
 async function handleChatMessage(req, res) {
   const message = cleanStr(req.body?.message);
   const mode = cleanStr(req.body?.mode) || "auto";
-  const incomingContext = req.body?.context && typeof req.body.context === "object" ? req.body.context : {};
+  const incomingContext =
+    req.body?.context && typeof req.body.context === "object"
+      ? req.body.context
+      : {};
   const sessionId = cleanStr(req.body?.sessionId) || "";
 
-  if (!message) return res.status(400).json({ ok: false, error: "message is required" });
+  if (!message) {
+    return res.status(400).json({ ok: false, error: "message is required" });
+  }
 
   let sessionCtx = {};
   if (sessionId) sessionCtx = SESSION_STORE.get(sessionId) || {};
@@ -1288,12 +1439,33 @@ async function handleChatMessage(req, res) {
       intent: "unknown",
       detail: "auto",
       refersToPrevious: false,
-      query: { keywords: [], color: null, weave: null, design: null, structure: null, content: [], gsm: { min: null, max: null } },
+      query: {
+        keywords: [],
+        color: null,
+        weave: null,
+        design: null,
+        structure: null,
+        content: [],
+        gsm: { min: null, max: null },
+      },
       contactInfo: {
-        source: null, salutationName: null, firstName: null, lastName: null, middleName: null,
-        emailAddress: null, phoneNumber: null, accountName: null,
-        addressStreet: null, addressCity: null, addressState: null, addressCountry: null, addressPostalCode: null,
-        opportunityAmountCurrency: null, opportunityAmount: null, cBusinessType: null, cFabricCategory: null,
+        source: null,
+        salutationName: null,
+        firstName: null,
+        lastName: null,
+        middleName: null,
+        emailAddress: null,
+        phoneNumber: null,
+        accountName: null,
+        addressStreet: null,
+        addressCity: null,
+        addressState: null,
+        addressCountry: null,
+        addressPostalCode: null,
+        opportunityAmountCurrency: null,
+        opportunityAmount: null,
+        cBusinessType: null,
+        cFabricCategory: null,
       },
       _openai_error: true,
     };
@@ -1304,7 +1476,10 @@ async function handleChatMessage(req, res) {
   const language = cleanStr(action?.language) || "auto";
 
   // 2) Merge contact info
-  const ctxContact = context?.contactInfo && typeof context.contactInfo === "object" ? context.contactInfo : {};
+  const ctxContact =
+    context?.contactInfo && typeof context.contactInfo === "object"
+      ? context.contactInfo
+      : {};
   let mergedContact = mergeContactInfo(ctxContact, action?.contactInfo || {});
   mergedContact = enrichContactFromHeuristics(message, mergedContact);
   mergedContact.source = "Chat Bot";
@@ -1322,7 +1497,8 @@ async function handleChatMessage(req, res) {
   const nextContext = {
     ...context,
     contactInfo: mergedContact,
-    leadId: cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId) || null,
+    leadId:
+      cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId) || null,
     lastIntent: intent,
     lastItems: Array.isArray(context?.lastItems) ? context.lastItems : [],
   };
@@ -1332,7 +1508,12 @@ async function handleChatMessage(req, res) {
   try {
     leadUpsert = await upsertLeadSingleRecord(nextContext, mergedContact);
   } catch (e) {
-    leadUpsert = { ok: false, mode: "exception", status: e?.status || null, error: e?.data || e?.message || String(e) };
+    leadUpsert = {
+      ok: false,
+      mode: "exception",
+      status: e?.status || null,
+      error: e?.data || e?.message || String(e),
+    };
     console.warn("[Lead] upsert exception:", leadUpsert);
   }
 
@@ -1344,7 +1525,9 @@ async function handleChatMessage(req, res) {
   let fetchErrors = [];
   try {
     const r = await fetchCandidateItems();
+
     items = r.items || [];
+
     fetchErrors = r.errors || [];
   } catch (e) {
     return res.status(502).json({
@@ -1380,7 +1563,9 @@ async function handleChatMessage(req, res) {
   const hasAnyMatch = !!topAll && topAllScore >= minScore;
   const hasProductMatch = !!topProduct && topProductScore >= minScore;
 
-  const lastItems = Array.isArray(nextContext?.lastItems) ? nextContext.lastItems : [];
+  const lastItems = Array.isArray(nextContext?.lastItems)
+    ? nextContext.lastItems
+    : [];
   const refersToPrev = !!action?.refersToPrevious;
 
   let focused = topAll;
@@ -1389,7 +1574,9 @@ async function handleChatMessage(req, res) {
     const wanted = lastItems[0];
     const key = itemKey(wanted?.entity, wanted?.id);
     if (key) {
-      const map = new Map(rankedAll.map(({ it }) => [itemKey(it.entity, it.id), it]));
+      const map = new Map(
+        rankedAll.map(({ it }) => [itemKey(it.entity, it.id), it]),
+      );
       focused = map.get(key) || topAll;
     }
   }
@@ -1423,16 +1610,32 @@ async function handleChatMessage(req, res) {
   if (intent === "availability" || intent === "recommend") {
     nextContext.lastProductIds = suggestions.map((s) => s.id);
     nextContext.lastProduct = topProduct
-      ? { id: topProduct.id, slug: topProduct.record?.productslug, name: getItemTitle("CProduct", topProduct.record) }
+      ? {
+          id: topProduct.id,
+          slug: topProduct.record?.productslug,
+          name: getItemTitle("CProduct", topProduct.record),
+        }
       : null;
 
-    const remember = suggestionsV2.slice(0, 6).map((s) => ({ entity: s.entity, id: s.id }));
-    nextContext.lastItems = remember.length ? remember : topAll ? [{ entity: topAll.entity, id: topAll.id }] : [];
+    const remember = suggestionsV2
+      .slice(0, 6)
+      .map((s) => ({ entity: s.entity, id: s.id }));
+    nextContext.lastItems = remember.length
+      ? remember
+      : topAll
+        ? [{ entity: topAll.entity, id: topAll.id }]
+        : [];
   } else if (intent === "details") {
-    nextContext.lastItems = focused ? [{ entity: focused.entity, id: focused.id }] : [];
+    nextContext.lastItems = focused
+      ? [{ entity: focused.entity, id: focused.id }]
+      : [];
     if (focused?.entity === "CProduct") {
       nextContext.lastProductIds = [focused.id];
-      nextContext.lastProduct = { id: focused.id, slug: focused.record?.productslug, name: getItemTitle("CProduct", focused.record) };
+      nextContext.lastProduct = {
+        id: focused.id,
+        slug: focused.record?.productslug,
+        name: getItemTitle("CProduct", focused.record),
+      };
     }
   }
 
@@ -1448,10 +1651,18 @@ async function handleChatMessage(req, res) {
         .slice(0, 3)
         .map(({ it }) => {
           const p = it.record;
-          const title = pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p));
+          const title = pickFirstNonEmpty(
+            p.productTitle,
+            p.name,
+            getFabricCode(p),
+          );
           const code = getFabricCode(p);
           const url = getFrontendUrlForProduct(p);
-          const meta = [cleanStr(p.category), p.gsm ? `${cleanStr(p.gsm)} GSM` : "", toArr(p.color).slice(0, 2).join(", ")]
+          const meta = [
+            cleanStr(p.category),
+            p.gsm ? `${cleanStr(p.gsm)} GSM` : "",
+            toArr(p.color).slice(0, 2).join(", "),
+          ]
             .filter(Boolean)
             .join(" · ");
           return `• ${title}${meta ? ` — ${meta}` : ""}\n  Fabric Code: ${code || "-"}\n  ${url || ""}`.trim();
@@ -1459,11 +1670,13 @@ async function handleChatMessage(req, res) {
 
       baseReply = `Here are a few matching options:\n${top3.join("\n")}\n\nWant details for the best match?`;
     } else {
-      baseReply = "I couldn’t find close matches. Tell me color, GSM range, content, and end-use (shirts/dresses/uniforms).";
+      baseReply =
+        "I couldn’t find close matches. Tell me color, GSM range, content, and end-use (shirts/dresses/uniforms).";
     }
   } else if (intent === "details") {
     if (!focused) {
-      baseReply = "Which item should I describe? Share the name/title (or a keyword).";
+      baseReply =
+        "Which item should I describe? Share the name/title (or a keyword).";
     } else if (focused.entity === "CProduct") {
       const p = focused.record;
       const lines = [];
@@ -1494,12 +1707,14 @@ async function handleChatMessage(req, res) {
   } else {
     if (hasAnyMatch && topAll) {
       if (topAll.entity === "CProduct") {
-        baseReply = "Tell me what fabric you’re looking for (color, weave/structure, GSM, content). I’ll check our catalogue.";
+        baseReply =
+          "Tell me what fabric you’re looking for (color, weave/structure, GSM, content). I’ll check our catalogue.";
       } else {
         baseReply = buildNonProductDetailsReply(topAll.entity, topAll.record);
       }
     } else {
-      baseReply = "Tell me what you’re looking for (fabric details or company-related query). I’ll check and respond.";
+      baseReply =
+        "Tell me what you’re looking for (fabric details or company-related query). I’ll check and respond.";
     }
   }
 

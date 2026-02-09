@@ -3,8 +3,8 @@ const ExcelJS = require("exceljs");
 const { espoRequest } = require("./espoClient");
 
 /* ------------------------------ constants (NO extra .env) ------------------------------ */
-const PAGE_SIZE = 200;          // Espo paging
-const HARD_MAX_ROWS = 10000;    // safety cap to avoid OOM
+const PAGE_SIZE = 200; // Espo paging
+const HARD_MAX_ROWS = 10000; // safety cap to avoid OOM
 
 // ✅ Always generate Excel (small or large)
 const ALWAYS_ATTACH_EXCEL = true;
@@ -32,7 +32,10 @@ function safeJson(obj) {
 }
 function stripHtml(html) {
   const s = String(html || "");
-  return s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  return s
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 function truncate(s, max = 160) {
   const t = cleanStr(s);
@@ -43,11 +46,15 @@ function stringifyCell(v) {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return truncate(stripHtml(v), 180);
   if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (Array.isArray(v))
+  if (Array.isArray(v)) {
     return truncate(
-      v.map((x) => stripHtml(cleanStr(x))).filter(Boolean).join(", "),
-      200
+      v
+        .map((x) => stripHtml(cleanStr(x)))
+        .filter(Boolean)
+        .join(", "),
+      200,
     );
+  }
   if (typeof v === "object") return truncate(JSON.stringify(v), 200);
   return truncate(String(v), 180);
 }
@@ -63,7 +70,10 @@ function isNullishValue(v) {
 function getAdminEntities() {
   const raw = cleanStr(process.env.ADMIN_CHAT_ENTITIES);
   if (!raw) return [];
-  return raw.split(",").map((x) => cleanStr(x)).filter(Boolean);
+  return raw
+    .split(",")
+    .map((x) => cleanStr(x))
+    .filter(Boolean);
 }
 function normalizeEntityName(requested) {
   const req = cleanStr(requested);
@@ -84,7 +94,12 @@ async function fetchAllRecords(entity) {
 
   while (true) {
     const data = await espoRequest(`/${e}`, {
-      query: { maxSize: PAGE_SIZE, offset, orderBy: "modifiedAt", order: "desc" },
+      query: {
+        maxSize: PAGE_SIZE,
+        offset,
+        orderBy: "modifiedAt",
+        order: "desc",
+      },
     });
 
     const list = Array.isArray(data?.list) ? data.list : [];
@@ -110,14 +125,18 @@ async function fetchRecord(entity, id) {
 
 /* ------------------------------ markdown table ------------------------------ */
 function escapePipe(s) {
-  return String(s || "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  return String(s || "")
+    .replace(/\|/g, "\\|")
+    .replace(/\r?\n/g, " ");
 }
 function toMarkdownTable(columns, rows) {
   const cols = columns.map((c) => escapePipe(c));
   const header = `| ${cols.join(" | ")} |`;
   const sep = `| ${cols.map(() => "---").join(" | ")} |`;
   const body = (rows || [])
-    .map((r) => `| ${columns.map((c) => escapePipe(r?.[c] ?? "")).join(" | ")} |`)
+    .map(
+      (r) => `| ${columns.map((c) => escapePipe(r?.[c] ?? "")).join(" | ")} |`,
+    )
     .join("\n");
   return [header, sep, body].filter(Boolean).join("\n");
 }
@@ -146,7 +165,9 @@ async function makeExcelBase64({ filename, sheets }) {
         from: { row: 1, column: 1 },
         to: { row: 1, column: (sh.columns || []).length || 1 },
       };
-    } catch {}
+    } catch {
+      // Ignore autoFilter errors
+    }
   }
 
   const arr = await wb.xlsx.writeBuffer();
@@ -174,11 +195,14 @@ function extractOutputText(openaiResponseJson) {
     for (const item of out) {
       if (item?.type === "message" && Array.isArray(item.content)) {
         for (const c of item.content) {
-          if (c?.type === "output_text" && typeof c.text === "string") return c.text;
+          if (c?.type === "output_text" && typeof c.text === "string")
+            {return c.text;}
         }
       }
     }
-  } catch {}
+  } catch {
+    // Ignore parsing errors
+  }
   return "";
 }
 async function openaiJson(schemaName, schema, system, user) {
@@ -205,7 +229,10 @@ async function openaiJson(schemaName, schema, system, user) {
 
   const resp = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
     body: JSON.stringify(body),
   });
 
@@ -238,12 +265,21 @@ function heuristicParse(message) {
   const id = idMatch ? idMatch[0] : null;
 
   let intent = "unknown";
-  if (m.includes("null") || m.includes("missing") || m.includes("empty")) intent = "audit_nulls";
-  else if (m.includes("detail") || m.includes("show record") || (m.includes("id") && id)) intent = "detail";
-  else if (m.includes("fields") || m.includes("columns")) intent = "field_summary";
-  else if (m.includes("list") || m.includes("show") || m.includes("all")) intent = "list";
+  if (m.includes("null") || m.includes("missing") || m.includes("empty"))
+    {intent = "audit_nulls";}
+  else if (
+    m.includes("detail") ||
+    m.includes("show record") ||
+    (m.includes("id") && id)
+  )
+    {intent = "detail";}
+  else if (m.includes("fields") || m.includes("columns"))
+    {intent = "field_summary";}
+  else if (m.includes("list") || m.includes("show") || m.includes("all"))
+    {intent = "list";}
 
-  const wantsExcel = m.includes("excel") || m.includes("export") || m.includes("sheet");
+  const wantsExcel =
+    m.includes("excel") || m.includes("export") || m.includes("sheet");
   return { intent, entity, id, wantsExcel, usedOpenAI: false };
 }
 
@@ -255,7 +291,10 @@ async function parseAdminMessage(message) {
     type: "object",
     additionalProperties: false,
     properties: {
-      intent: { type: "string", enum: ["audit_nulls", "list", "detail", "field_summary", "unknown"] },
+      intent: {
+        type: "string",
+        enum: ["audit_nulls", "list", "detail", "field_summary", "unknown"],
+      },
       entity: { type: ["string", "null"] },
       id: { type: ["string", "null"] },
       wantsExcel: { type: "boolean" },
@@ -276,7 +315,12 @@ async function parseAdminMessage(message) {
   const user = `AllowedEntities: ${safeJson(allowed)}\nAdmin message: ${message}`;
 
   try {
-    const r = await openaiJson("admin_audit_action_inline_excel", schema, system, user);
+    const r = await openaiJson(
+      "admin_audit_action_inline_excel",
+      schema,
+      system,
+      user,
+    );
     return { ...r, usedOpenAI: true };
   } catch {
     return heuristicParse(message);
@@ -286,9 +330,21 @@ async function parseAdminMessage(message) {
 /* ------------------------------ audit helpers ------------------------------ */
 function getTitle(entity, rec) {
   if (!rec) return "";
-  if (entity === "CProduct")
-    return cleanStr(rec.productTitle) || cleanStr(rec.name) || cleanStr(rec.fabricCode) || "";
-  return cleanStr(rec.title) || cleanStr(rec.name) || cleanStr(rec.subject) || cleanStr(rec.heading) || "";
+  if (entity === "CProduct") {
+    return (
+      cleanStr(rec.productTitle) ||
+      cleanStr(rec.name) ||
+      cleanStr(rec.fabricCode) ||
+      ""
+    );
+  }
+  return (
+    cleanStr(rec.title) ||
+    cleanStr(rec.name) ||
+    cleanStr(rec.subject) ||
+    cleanStr(rec.heading) ||
+    ""
+  );
 }
 
 function collectColumns(records, { sample = 60 } = {}) {
@@ -306,7 +362,9 @@ function collectColumns(records, { sample = 60 } = {}) {
  * - Field Summary stays optional (2nd sheet), but Per Record is sheet #1.
  */
 function computeNullAudit(entity, records) {
-  const cols = collectColumns(records, { sample: Math.min(120, records.length) })
+  const cols = collectColumns(records, {
+    sample: Math.min(120, records.length),
+  })
     .filter((c) => c !== "id")
     .sort((a, b) => a.localeCompare(b));
 
@@ -322,7 +380,8 @@ function computeNullAudit(entity, records) {
     for (const f of cols) {
       if (isNullishValue(r?.[f])) missing.push(f);
     }
-    for (const f of missing) perFieldMissing.set(f, (perFieldMissing.get(f) || 0) + 1);
+    for (const f of missing)
+      {perFieldMissing.set(f, (perFieldMissing.get(f) || 0) + 1);}
 
     const title = cleanStr(getTitle(entity, r));
 
@@ -358,7 +417,8 @@ function computeNullAudit(entity, records) {
 /* ------------------------------ main handler ------------------------------ */
 async function handleAdminChatMessage(req, res) {
   const message = cleanStr(req.body?.message);
-  if (!message) return res.status(400).json({ ok: false, error: "message is required" });
+  if (!message)
+    {return res.status(400).json({ ok: false, error: "message is required" });}
 
   const allowed = getAdminEntities();
 
@@ -366,24 +426,44 @@ async function handleAdminChatMessage(req, res) {
   if (!allowed.length) {
     const rows = [
       { Error: "ADMIN_CHAT_ENTITIES is missing in .env" },
-      { Example: "ADMIN_CHAT_ENTITIES=CProduct,CCollection,CCompanyInformation" },
+      {
+        Example: "ADMIN_CHAT_ENTITIES=CProduct,CCollection,CCompanyInformation",
+      },
     ];
 
-    const md = toMarkdownTable(["Error"], [{ Error: rows[0].Error }]) +
+    const md =
+      toMarkdownTable(["Error"], [{ Error: rows[0].Error }]) +
       "\n\n" +
       toMarkdownTable(["Example"], [{ Example: rows[1].Example }]);
 
     const download = await makeExcelBase64({
       filename: `AdminChat_error_${nowIso().slice(0, 10)}.xlsx`,
-      sheets: [{ name: "Error", columns: ["Error", "Example"], rows: [{ Error: rows[0].Error, Example: rows[1].Example }] }],
+      sheets: [
+        {
+          name: "Error",
+          columns: ["Error", "Example"],
+          rows: [{ Error: rows[0].Error, Example: rows[1].Example }],
+        },
+      ],
     });
 
     return res.json({
       ok: true,
       replyText: md,
-      tables: [{ name: "Error", columns: ["Error", "Example"], rows: [{ Error: rows[0].Error, Example: rows[1].Example }] }],
+      tables: [
+        {
+          name: "Error",
+          columns: ["Error", "Example"],
+          rows: [{ Error: rows[0].Error, Example: rows[1].Example }],
+        },
+      ],
       download,
-      meta: { ts: nowIso(), intent: "unknown", targetEntity: null, usedOpenAI: false },
+      meta: {
+        ts: nowIso(),
+        intent: "unknown",
+        targetEntity: null,
+        usedOpenAI: false,
+      },
     });
   }
 
@@ -423,8 +503,11 @@ async function handleAdminChatMessage(req, res) {
     const rows = [{ Field: "id" }, ...cols.map((c) => ({ Field: c }))];
     const preview = rows.slice(0, PREVIEW_ROWS);
 
-    const md = toMarkdownTable(["Field"], preview) +
-      (rows.length > PREVIEW_ROWS ? `\n\n(Preview: ${PREVIEW_ROWS}/${rows.length}. Full in Excel.)` : "");
+    const md =
+      toMarkdownTable(["Field"], preview) +
+      (rows.length > PREVIEW_ROWS
+        ? `\n\n(Preview: ${PREVIEW_ROWS}/${rows.length}. Full in Excel.)`
+        : "");
 
     const download = shouldAttachExcel(rows.length, 1, wantsExcel)
       ? await makeExcelBase64({
@@ -438,7 +521,13 @@ async function handleAdminChatMessage(req, res) {
       replyText: md,
       tables: [{ name: "Fields", columns: ["Field"], rows }],
       download,
-      meta: { ts: nowIso(), intent, targetEntity: entity, truncated, usedOpenAI },
+      meta: {
+        ts: nowIso(),
+        intent,
+        targetEntity: entity,
+        truncated,
+        usedOpenAI,
+      },
     });
   }
 
@@ -446,7 +535,9 @@ async function handleAdminChatMessage(req, res) {
   if (intent === "detail") {
     const id = cleanStr(action?.id);
     if (!id) {
-      const rows = [{ Entity: entity, Error: "Please include record id for detail." }];
+      const rows = [
+        { Entity: entity, Error: "Please include record id for detail." },
+      ];
       const md = toMarkdownTable(["Entity", "Error"], rows);
 
       const download = await makeExcelBase64({
@@ -459,13 +550,21 @@ async function handleAdminChatMessage(req, res) {
         replyText: md,
         tables: [{ name: "Error", columns: ["Entity", "Error"], rows }],
         download,
-        meta: { ts: nowIso(), intent, targetEntity: entity, id: null, usedOpenAI },
+        meta: {
+          ts: nowIso(),
+          intent,
+          targetEntity: entity,
+          id: null,
+          usedOpenAI,
+        },
       });
     }
 
     const rec = await fetchRecord(entity, id).catch(() => null);
     if (!rec) {
-      const rows = [{ Entity: entity, ID: id, Error: "Record not found / fetch failed." }];
+      const rows = [
+        { Entity: entity, ID: id, Error: "Record not found / fetch failed." },
+      ];
       const md = toMarkdownTable(["Entity", "ID", "Error"], rows);
 
       const download = await makeExcelBase64({
@@ -486,8 +585,11 @@ async function handleAdminChatMessage(req, res) {
     const rows = keys.map((k) => ({ Field: k, Value: stringifyCell(rec[k]) }));
     const preview = rows.slice(0, PREVIEW_ROWS);
 
-    const md = toMarkdownTable(["Field", "Value"], preview) +
-      (rows.length > PREVIEW_ROWS ? `\n\n(Preview: ${PREVIEW_ROWS}/${rows.length}. Full in Excel.)` : "");
+    const md =
+      toMarkdownTable(["Field", "Value"], preview) +
+      (rows.length > PREVIEW_ROWS
+        ? `\n\n(Preview: ${PREVIEW_ROWS}/${rows.length}. Full in Excel.)`
+        : "");
 
     const download = await makeExcelBase64({
       filename: `${entity}_detail_${id}.xlsx`,
@@ -506,23 +608,40 @@ async function handleAdminChatMessage(req, res) {
   /* ---------------- audit nulls ---------------- */
   if (intent === "audit_nulls") {
     const { list, truncated } = await fetchAllRecords(entity);
-    const { fieldRows, perRecordPreview, perRecordExcel } = computeNullAudit(entity, list);
+    const { fieldRows, perRecordPreview, perRecordExcel } = computeNullAudit(
+      entity,
+      list,
+    );
 
     // ✅ Show PER-RECORD preview in chat (this is what you want to understand)
     const preview = perRecordPreview.slice(0, PREVIEW_ROWS);
 
-    const mdPerRecord = toMarkdownTable(
-      ["ID", "Title", "MissingCount", "MissingFields"],
-      preview.length ? preview : [{ ID: "-", Title: "-", MissingCount: "0", MissingFields: "-" }]
-    ) + (perRecordExcel.length > PREVIEW_ROWS ? `\n\n(Preview: ${PREVIEW_ROWS}/${perRecordExcel.length}. Full in Excel.)` : "");
+    const mdPerRecord =
+      toMarkdownTable(
+        ["ID", "Title", "MissingCount", "MissingFields"],
+        preview.length
+          ? preview
+          : [{ ID: "-", Title: "-", MissingCount: "0", MissingFields: "-" }],
+      ) +
+      (perRecordExcel.length > PREVIEW_ROWS
+        ? `\n\n(Preview: ${PREVIEW_ROWS}/${perRecordExcel.length}. Full in Excel.)`
+        : "");
 
     // ✅ Excel: sheet#1 = Per Record (FULL, not truncated)
     // ✅ Excel: sheet#2 = Field Summary (optional, but not first)
     const download = await makeExcelBase64({
       filename: `${entity}_null_audit_${nowIso().slice(0, 10)}.xlsx`,
       sheets: [
-        { name: "Per Record", columns: ["ID", "Title", "MissingCount", "MissingFields"], rows: perRecordExcel },
-        { name: "Field Summary", columns: ["Field", "MissingCount", "MissingPct"], rows: fieldRows },
+        {
+          name: "Per Record",
+          columns: ["ID", "Title", "MissingCount", "MissingFields"],
+          rows: perRecordExcel,
+        },
+        {
+          name: "Field Summary",
+          columns: ["Field", "MissingCount", "MissingPct"],
+          rows: fieldRows,
+        },
       ],
     });
 
@@ -530,11 +649,26 @@ async function handleAdminChatMessage(req, res) {
       ok: true,
       replyText: mdPerRecord,
       tables: [
-        { name: "PerRecord", columns: ["ID", "Title", "MissingCount", "MissingFields"], rows: perRecordExcel },
-        { name: "FieldSummary", columns: ["Field", "MissingCount", "MissingPct"], rows: fieldRows },
+        {
+          name: "PerRecord",
+          columns: ["ID", "Title", "MissingCount", "MissingFields"],
+          rows: perRecordExcel,
+        },
+        {
+          name: "FieldSummary",
+          columns: ["Field", "MissingCount", "MissingPct"],
+          rows: fieldRows,
+        },
       ],
       download,
-      meta: { ts: nowIso(), intent, targetEntity: entity, totalRecords: perRecordExcel.length, truncated, usedOpenAI },
+      meta: {
+        ts: nowIso(),
+        intent,
+        targetEntity: entity,
+        totalRecords: perRecordExcel.length,
+        truncated,
+        usedOpenAI,
+      },
     });
   }
 
@@ -549,8 +683,11 @@ async function handleAdminChatMessage(req, res) {
   });
 
   const preview = rows.slice(0, PREVIEW_ROWS);
-  const md = toMarkdownTable(cols, preview) +
-    (rows.length > PREVIEW_ROWS ? `\n\n(Preview: ${PREVIEW_ROWS}/${rows.length}. Full in Excel.)` : "");
+  const md =
+    toMarkdownTable(cols, preview) +
+    (rows.length > PREVIEW_ROWS
+      ? `\n\n(Preview: ${PREVIEW_ROWS}/${rows.length}. Full in Excel.)`
+      : "");
 
   const download = await makeExcelBase64({
     filename: `${entity}_list_${nowIso().slice(0, 10)}.xlsx`,
@@ -562,7 +699,14 @@ async function handleAdminChatMessage(req, res) {
     replyText: md,
     tables: [{ name: "List", columns: cols, rows }],
     download,
-    meta: { ts: nowIso(), intent: "list", targetEntity: entity, totalRows: rows.length, truncated, usedOpenAI },
+    meta: {
+      ts: nowIso(),
+      intent: "list",
+      targetEntity: entity,
+      totalRows: rows.length,
+      truncated,
+      usedOpenAI,
+    },
   });
 }
 

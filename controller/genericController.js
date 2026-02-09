@@ -186,7 +186,7 @@ const populateRelatedDataBulk = async (
   return result;
 };
 
-const populateRelatedData = async (
+const _populateRelatedData = async (
   records,
   entityName,
   populateFields = [],

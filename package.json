@@ -4,7 +4,15 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "dev": "node index.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "lint:report": "eslint . --output-file eslint-report.txt --format stylish",
+    "test": "npm run lint && node test-cache-simple.js",
+    "build": "npm run lint && node build.js",
+    "validate": "npm run lint",
+    "deploy:check": "npm run build"
   },
   "keywords": [],
   "author": "",
@@ -18,5 +26,9 @@
     "mongoose": "^9.1.0",
     "node-cache": "^5.1.2",
     "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.0.0"
   }
 }
