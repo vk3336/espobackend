@@ -1,5 +1,11 @@
 const { espoRequest } = require("./espoClient");
 const { attachCollections, attachRelatedEntities } = require("../utils/espo");
+const {
+  getCacheKey,
+  getCache,
+  setCache,
+  deleteCacheByEntity,
+} = require("../utils/cache");
 
 /* ------------------------------ ENV helpers ------------------------------ */
 function cleanStr(v) {
@@ -51,6 +57,18 @@ function includesLoose(hay, needle) {
 /* ------------------------------ Paging helper ------------------------------ */
 // Fetch ALL records for list endpoints (safe for 120 records; scalable)
 async function fetchAllRecords(entityName, { orderBy, order, select } = {}) {
+  // Check cache first
+  const cacheKey = getCacheKey(entityName, {
+    type: "all",
+    orderBy: orderBy || "",
+    order: order || "",
+  });
+
+  const cached = getCache(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const pageSize = Number(process.env.ESPO_LIST_PAGE_SIZE || 200);
   const maxTotal = Number(process.env.ESPO_LIST_MAX_TOTAL || 5000);
 
@@ -85,10 +103,15 @@ async function fetchAllRecords(entityName, { orderBy, order, select } = {}) {
     if (list.length < pageSize) break;
   }
 
-  return {
+  const result = {
     list: all,
     total: total !== null ? total : all.length,
   };
+
+  // Store in cache for 24 hours
+  setCache(cacheKey, result);
+
+  return result;
 }
 
 /* ------------------------------ Collection fields ------------------------------ */
@@ -104,21 +127,33 @@ const DEFAULT_COLLECTION_SELECT_FIELDS = [
 
 const COLLECTION_SELECT_FIELDS = parseCsvEnvList(
   "ESPO_COLLECTION_SELECT_FIELDS",
-  DEFAULT_COLLECTION_SELECT_FIELDS
+  DEFAULT_COLLECTION_SELECT_FIELDS,
 );
 
 /* ------------------------------ Bulk populate ------------------------------ */
-const populateRelatedDataBulk = async (records, entityName, populateFields = []) => {
+const populateRelatedDataBulk = async (
+  records,
+  entityName,
+  populateFields = [],
+) => {
   console.log(
-    `[populateRelatedDataBulk] Called for ${entityName} with ${records.length} records`
+    `[populateRelatedDataBulk] Called for ${entityName} with ${records.length} records`,
   );
 
-  if (!Array.isArray(records) || records.length === 0 || populateFields.length === 0) {
+  if (
+    !Array.isArray(records) ||
+    records.length === 0 ||
+    populateFields.length === 0
+  ) {
     return records;
   }
 
-  const collectionConfig = populateFields.find((f) => f.fieldName === "collection");
-  const otherConfigs = populateFields.filter((f) => f.fieldName !== "collection");
+  const collectionConfig = populateFields.find(
+    (f) => f.fieldName === "collection",
+  );
+  const otherConfigs = populateFields.filter(
+    (f) => f.fieldName !== "collection",
+  );
 
   let result = [...records];
 
@@ -146,14 +181,18 @@ const populateRelatedDataBulk = async (records, entityName, populateFields = [])
   }
 
   console.log(
-    `[populateRelatedDataBulk] Successfully populated ${records.length} records`
+    `[populateRelatedDataBulk] Successfully populated ${records.length} records`,
   );
   return result;
 };
 
-const populateRelatedData = async (records, entityName, populateFields = []) => {
+const populateRelatedData = async (
+  records,
+  entityName,
+  populateFields = [],
+) => {
   console.warn(
-    "[DEPRECATED] Using old populateRelatedData - consider switching to populateRelatedDataBulk"
+    "[DEPRECATED] Using old populateRelatedData - consider switching to populateRelatedDataBulk",
   );
   return populateRelatedDataBulk(records, entityName, populateFields);
 };
@@ -162,10 +201,18 @@ const populateRelatedData = async (records, entityName, populateFields = []) => 
 const getEntityPopulateConfig = (entityName) => {
   const configs = {
     CProduct: [
-      { fieldName: "collection", relatedEntity: "CCollection", idField: "collectionId" },
+      {
+        fieldName: "collection",
+        relatedEntity: "CCollection",
+        idField: "collectionId",
+      },
       { fieldName: "account", relatedEntity: "Account", idField: "accountId" },
       { fieldName: "createdBy", relatedEntity: "User", idField: "createdById" },
-      { fieldName: "modifiedBy", relatedEntity: "User", idField: "modifiedById" },
+      {
+        fieldName: "modifiedBy",
+        relatedEntity: "User",
+        idField: "modifiedById",
+      },
     ],
   };
 
@@ -204,7 +251,10 @@ const createEntityController = (entityName) => {
           return merchTags.some((tag) => eqLoose(tag, "ecatalogue"));
         });
 
-        const paginatedRecordsRaw = filteredRecords.slice(offset, offset + limit);
+        const paginatedRecordsRaw = filteredRecords.slice(
+          offset,
+          offset + limit,
+        );
         let paginatedRecords = paginatedRecordsRaw;
 
         if (populate) {
@@ -212,7 +262,7 @@ const createEntityController = (entityName) => {
           paginatedRecords = await populateRelatedDataBulk(
             paginatedRecords,
             entityName,
-            populateConfig
+            populateConfig,
           );
         }
 
@@ -269,7 +319,10 @@ const createEntityController = (entityName) => {
           return pub.getTime() <= now.getTime();
         });
 
-        const paginatedRecordsRaw = filteredRecords.slice(offset, offset + limit);
+        const paginatedRecordsRaw = filteredRecords.slice(
+          offset,
+          offset + limit,
+        );
         let paginatedRecords = paginatedRecordsRaw;
 
         if (populate) {
@@ -277,7 +330,7 @@ const createEntityController = (entityName) => {
           paginatedRecords = await populateRelatedDataBulk(
             paginatedRecords,
             entityName,
-            populateConfig
+            populateConfig,
           );
         }
 
@@ -310,7 +363,11 @@ const createEntityController = (entityName) => {
 
       if (populate) {
         const populateConfig = getEntityPopulateConfig(entityName);
-        records = await populateRelatedDataBulk(records, entityName, populateConfig);
+        records = await populateRelatedDataBulk(
+          records,
+          entityName,
+          populateConfig,
+        );
       }
 
       res.json({
@@ -325,7 +382,9 @@ const createEntityController = (entityName) => {
         },
       });
     } catch (e) {
-      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
+      res
+        .status(e.status || 500)
+        .json({ success: false, error: e.data || e.message });
     }
   };
 
@@ -337,7 +396,19 @@ const createEntityController = (entityName) => {
         req.query.populate === "true" ||
         req.query.populate === "1";
 
-      const data = await espoRequest(`/${entityName}/${req.params.id}`);
+      // Check cache first
+      const cacheKey = getCacheKey(entityName, {
+        type: "single",
+        id: req.params.id,
+      });
+
+      let data = getCache(cacheKey);
+
+      if (!data) {
+        data = await espoRequest(`/${entityName}/${req.params.id}`);
+        setCache(cacheKey, data);
+      }
+
       let record = data;
 
       if (populate && record) {
@@ -345,14 +416,16 @@ const createEntityController = (entityName) => {
         const populatedRecords = await populateRelatedDataBulk(
           [record],
           entityName,
-          populateConfig
+          populateConfig,
         );
         record = populatedRecords[0];
       }
 
       res.json({ success: true, data: record, entity: entityName });
     } catch (e) {
-      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
+      res
+        .status(e.status || 500)
+        .json({ success: false, error: e.data || e.message });
     }
   };
 
@@ -362,9 +435,15 @@ const createEntityController = (entityName) => {
         method: "POST",
         body: req.body,
       });
+
+      // Invalidate cache for this entity
+      deleteCacheByEntity(entityName);
+
       res.json({ success: true, data, entity: entityName });
     } catch (e) {
-      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
+      res
+        .status(e.status || 500)
+        .json({ success: false, error: e.data || e.message });
     }
   };
 
@@ -374,18 +453,32 @@ const createEntityController = (entityName) => {
         method: "PUT",
         body: req.body,
       });
+
+      // Invalidate cache for this entity
+      deleteCacheByEntity(entityName);
+
       res.json({ success: true, data, entity: entityName });
     } catch (e) {
-      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
+      res
+        .status(e.status || 500)
+        .json({ success: false, error: e.data || e.message });
     }
   };
 
   const deleteRecord = async (req, res) => {
     try {
-      await espoRequest(`/${entityName}/${req.params.id}`, { method: "DELETE" });
+      await espoRequest(`/${entityName}/${req.params.id}`, {
+        method: "DELETE",
+      });
+
+      // Invalidate cache for this entity
+      deleteCacheByEntity(entityName);
+
       res.json({ success: true, entity: entityName });
     } catch (e) {
-      res.status(e.status || 500).json({ success: false, error: e.data || e.message });
+      res
+        .status(e.status || 500)
+        .json({ success: false, error: e.data || e.message });
     }
   };
 
@@ -437,7 +530,7 @@ const createEntityController = (entityName) => {
         paginatedRecords = await populateRelatedDataBulk(
           paginatedRecords,
           entityName,
-          populateConfig
+          populateConfig,
         );
       }
 
@@ -457,7 +550,7 @@ const createEntityController = (entityName) => {
     } catch (e) {
       console.error(
         `[getRecordsByFieldValue] Error for ${entityName}/${req.params.fieldName}/${req.params.fieldValue}:`,
-        { status: e.status, message: e.message, data: e.data }
+        { status: e.status, message: e.message, data: e.data },
       );
       res.status(e.status || 500).json({
         success: false,
@@ -569,7 +662,9 @@ const createEntityController = (entityName) => {
           keywordsMatch = keywords.some((k) => includesLoose(k, searchTerm));
         }
 
-        const titleMatch = productTitle ? includesLoose(productTitle, searchTerm) : false;
+        const titleMatch = productTitle
+          ? includesLoose(productTitle, searchTerm)
+          : false;
         const nameMatch = name ? includesLoose(name, searchTerm) : false;
 
         return keywordsMatch || titleMatch || nameMatch;
@@ -582,7 +677,7 @@ const createEntityController = (entityName) => {
       paginatedRecords = await populateRelatedDataBulk(
         paginatedRecords,
         entityName,
-        populateConfig
+        populateConfig,
       );
 
       return res.json({
@@ -600,7 +695,12 @@ const createEntityController = (entityName) => {
     } catch (e) {
       console.error(
         `[getBySearchProduct] Error searching for "${req.params.searchValue}" in ${entityName}:`,
-        { status: e.status, message: e.message, data: e.data, url: e.url || "unknown" }
+        {
+          status: e.status,
+          message: e.message,
+          data: e.data,
+          url: e.url || "unknown",
+        },
       );
       res.status(e.status || 500).json({
         success: false,

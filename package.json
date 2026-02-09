@@ -16,6 +16,7 @@
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "mongoose": "^9.1.0",
+    "node-cache": "^5.1.2",
     "node-cron": "^3.0.3"
   }
 }

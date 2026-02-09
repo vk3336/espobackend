@@ -9,7 +9,9 @@ const { createEntityRoutes } = require("./routes/generic");
 const chatRoutes = require("./routes/chat");
 const adminChatRoutes = require("./routes/adminChat");
 const indexnowRoutes = require("./routes/indexnow");
+const cacheRoutes = require("./routes/cache");
 const { startIndexNowScheduler } = require("./utils/indexnowScheduler");
+const { warmUpCache, scheduleCacheRefresh } = require("./utils/cacheWarmer");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -77,6 +79,9 @@ apiBaseNames.forEach((baseName) => {
 
   // IndexNow endpoints
   app.use(`/${baseName}/indexnow`, indexnowRoutes);
+
+  // Cache management endpoints
+  app.use(`/${baseName}/cache`, cacheRoutes);
 });
 
 // Basic health check route
@@ -118,6 +123,8 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   const memoryUsage = process.memoryUsage();
   const uptime = process.uptime();
+  const { getCacheStats } = require("./utils/cache");
+  const cacheStats = getCacheStats();
 
   res.json({
     status: "healthy",
@@ -127,6 +134,16 @@ app.get("/health", (req, res) => {
       rss: `${Math.round(memoryUsage.rss / 1024 / 1024)}MB`,
       heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`,
       heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)}MB`,
+    },
+    cache: {
+      enabled: true,
+      keys: cacheStats.keys,
+      hits: cacheStats.hits,
+      misses: cacheStats.misses,
+      hitRate:
+        cacheStats.hits + cacheStats.misses > 0
+          ? `${Math.round((cacheStats.hits / (cacheStats.hits + cacheStats.misses)) * 100)}%`
+          : "0%",
     },
     environment: {
       nodeVersion: process.version,
@@ -174,7 +191,7 @@ module.exports = app;
 
 // For local development only
 if (require.main === module) {
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     console.log(`Server is running on port http://localhost:${PORT}`);
     console.log(`EspoCRM Base URL: ${process.env.ESPO_BASE_URL}`);
     console.log(`Configured Entities: ${entities.join(", ")}`);
@@ -189,10 +206,29 @@ if (require.main === module) {
 
     // Start IndexNow scheduler
     startIndexNowScheduler();
+
+    // Warm up cache with all entities
+    console.log("\n[Startup] Warming up cache...");
+    await warmUpCache(entities);
+
+    // Schedule automatic cache refresh every 24 hours
+    scheduleCacheRefresh(entities);
+
+    console.log("\n[Startup] Server ready with cache enabled!");
   });
 }
 
 // Start IndexNow scheduler for serverless environments
 if (process.env.NODE_ENV === "production") {
   startIndexNowScheduler();
+
+  // Warm up cache in production (Vercel serverless)
+  warmUpCache(entities)
+    .then(() => {
+      console.log("[Production] Cache warmed up successfully");
+      scheduleCacheRefresh(entities);
+    })
+    .catch((error) => {
+      console.error("[Production] Cache warm-up failed:", error.message);
+    });
 }
