@@ -6,6 +6,7 @@ const {
   setCache,
   deleteCacheByEntity,
 } = require("../utils/cache");
+const { revalidateFrontends } = require("../utils/revalidateFrontends");
 
 /* ------------------------------ ENV helpers ------------------------------ */
 function cleanStr(v) {
@@ -439,6 +440,9 @@ const createEntityController = (entityName) => {
       // Invalidate cache for this entity
       deleteCacheByEntity(entityName);
 
+      // Notify frontends to revalidate their cache
+      await revalidateFrontends();
+
       res.json({ success: true, data, entity: entityName });
     } catch (e) {
       res
@@ -457,6 +461,9 @@ const createEntityController = (entityName) => {
       // Invalidate cache for this entity
       deleteCacheByEntity(entityName);
 
+      // Notify frontends to revalidate their cache
+      await revalidateFrontends();
+
       res.json({ success: true, data, entity: entityName });
     } catch (e) {
       res
@@ -473,6 +480,9 @@ const createEntityController = (entityName) => {
 
       // Invalidate cache for this entity
       deleteCacheByEntity(entityName);
+
+      // Notify frontends to revalidate their cache
+      await revalidateFrontends();
 
       res.json({ success: true, entity: entityName });
     } catch (e) {
