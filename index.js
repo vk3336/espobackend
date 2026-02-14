@@ -10,6 +10,7 @@ const chatRoutes = require("./routes/chat");
 const adminChatRoutes = require("./routes/adminChat");
 const indexnowRoutes = require("./routes/indexnow");
 const cacheRoutes = require("./routes/cache");
+const authRoutes = require("./routes/auth");
 const { startIndexNowScheduler } = require("./utils/indexnowScheduler");
 const { warmUpCache, scheduleCacheRefresh } = require("./utils/cacheWarmer");
 
@@ -77,6 +78,9 @@ apiBaseNames.forEach((baseName) => {
   // Admin audit chat
   app.use(`/${baseName}/admin-chat`, adminChatRoutes());
 
+  // Auth endpoints (OTP)
+  app.use(`/${baseName}/auth`, authRoutes);
+
   // IndexNow endpoints
   app.use(`/${baseName}/indexnow`, indexnowRoutes);
 
@@ -115,6 +119,13 @@ app.get("/", (req, res) => {
         "Get records by field value",
       "GET /:entity/search/:searchValue":
         "Search products by keywords or productTitle",
+    },
+    authEndpoints: {
+      "POST /:base/auth/register":
+        "Register new account (email, firstName, lastName, phoneNumber)",
+      "POST /:base/auth/login": "Login with existing account (email)",
+      "POST /:base/auth/verify-otp": "Verify OTP code (email, otp)",
+      "GET /:base/auth/health": "Auth service health check",
     },
   });
 });
