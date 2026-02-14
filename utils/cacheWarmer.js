@@ -2,11 +2,40 @@ const { espoRequest } = require("../controller/espoClient");
 const { getCacheKey, setCache } = require("./cache");
 
 /**
- * Warm up cache by pre-loading all entities
+ * Warm up cache by pre-loading specified entities
  * This runs on server startup to ensure fast first requests
  */
 async function warmUpCache(entities) {
-  console.log("[Cache Warmer] Starting cache warm-up...");
+  const { getCachedEntities, getNoCacheEntities } = require("./cache");
+
+  const cachedEntities = getCachedEntities();
+  const noCacheEntities = getNoCacheEntities();
+
+  // Determine which entities to warm up (only cached entities)
+  let entitiesToWarm = [];
+
+  if (cachedEntities.length > 0) {
+    // Only warm up entities in CACHE_ENTITIES
+    entitiesToWarm = entities.filter((e) => cachedEntities.includes(e));
+  } else {
+    // Default: warm up all entities except NO_CACHE_ENTITIES
+    entitiesToWarm = entities.filter((e) => !noCacheEntities.includes(e));
+  }
+
+  if (entitiesToWarm.length === 0) {
+    console.log("[Cache Warmer] No entities configured for caching");
+    return { success: [], failed: [] };
+  }
+
+  console.log(
+    `[Cache Warmer] Starting cache warm-up for: ${entitiesToWarm.join(", ")}`,
+  );
+  if (noCacheEntities.length > 0) {
+    console.log(
+      `[Cache Warmer] Skipping (no cache): ${noCacheEntities.join(", ")}`,
+    );
+  }
+
   const startTime = Date.now();
 
   const results = {
@@ -14,7 +43,7 @@ async function warmUpCache(entities) {
     failed: [],
   };
 
-  for (const entityName of entities) {
+  for (const entityName of entitiesToWarm) {
     try {
       console.log(`[Cache Warmer] Loading ${entityName}...`);
 
@@ -59,7 +88,7 @@ async function warmUpCache(entities) {
         orderBy: "",
         order: "",
       });
-      setCache(cacheKey, result);
+      setCache(cacheKey, result, null, entityName);
 
       // Also cache individual records
       for (const record of all) {
@@ -68,7 +97,7 @@ async function warmUpCache(entities) {
             type: "single",
             id: record.id,
           });
-          setCache(recordCacheKey, record);
+          setCache(recordCacheKey, record, null, entityName);
         }
       }
 
@@ -99,19 +128,42 @@ async function warmUpCache(entities) {
 }
 
 /**
- * Schedule periodic cache refresh (every 24 hours)
+ * Schedule periodic cache refresh (only for cached entities)
  */
 function scheduleCacheRefresh(entities) {
+  const { getCachedEntities, getNoCacheEntities } = require("./cache");
+
+  const cachedEntities = getCachedEntities();
+  const noCacheEntities = getNoCacheEntities();
+
+  // Determine which entities to refresh
+  let entitiesToRefresh = [];
+
+  if (cachedEntities.length > 0) {
+    entitiesToRefresh = entities.filter((e) => cachedEntities.includes(e));
+  } else {
+    // Default: refresh all entities except NO_CACHE_ENTITIES
+    entitiesToRefresh = entities.filter((e) => !noCacheEntities.includes(e));
+  }
+
+  if (entitiesToRefresh.length === 0) {
+    console.log("[Cache Warmer] No cached entities to refresh");
+    return;
+  }
+
   const refreshInterval =
     Number(process.env.CACHE_REFRESH_INTERVAL_HOURS || 24) * 60 * 60 * 1000;
 
   console.log(
     `[Cache Warmer] Scheduling refresh every ${refreshInterval / 1000 / 60 / 60} hours`,
   );
+  console.log(
+    `[Cache Warmer] Entities to refresh: ${entitiesToRefresh.join(", ")}`,
+  );
 
   setInterval(async () => {
     console.log("[Cache Warmer] Starting scheduled cache refresh...");
-    await warmUpCache(entities);
+    await warmUpCache(entitiesToRefresh);
   }, refreshInterval);
 }
 

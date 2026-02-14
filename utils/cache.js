@@ -2,12 +2,12 @@ const NodeCache = require("node-cache");
 
 /**
  * Cache configuration:
- * - stdTTL: 24 hours (86400 seconds)
+ * - stdTTL: 0 (no expiration by default, we'll set per-entity)
  * - checkperiod: Check for expired keys every 2 hours (7200 seconds)
  * - useClones: false for better performance (be careful with mutations)
  */
 const cache = new NodeCache({
-  stdTTL: 86400, // 24 hours in seconds
+  stdTTL: 0, // No expiration by default
   checkperiod: 7200, // Check every 2 hours
   useClones: false, // Better performance, but don't mutate cached objects
   deleteOnExpire: true,
@@ -55,13 +55,51 @@ function getCacheKey(entityName, params = {}) {
 }
 
 /**
+ * Check if an entity should use cache
+ * Returns: 'permanent' | 'timed' | false
+ * - 'permanent': NO_CACHE_ENTITIES (fastest, never expires)
+ * - 'timed': CACHE_ENTITIES (24-hour TTL)
+ * - false: Don't cache
+ */
+function shouldUseCache(entityName) {
+  const cachedEntities = process.env.CACHE_ENTITIES
+    ? process.env.CACHE_ENTITIES.split(",").map((e) => e.trim())
+    : [];
+
+  const noCacheEntities = process.env.NO_CACHE_ENTITIES
+    ? process.env.NO_CACHE_ENTITIES.split(",").map((e) => e.trim())
+    : [];
+
+  // NO_CACHE_ENTITIES = Permanent cache (fastest, never expires)
+  if (noCacheEntities.includes(entityName)) {
+    return "permanent";
+  }
+
+  // CACHE_ENTITIES = Timed cache (24-hour TTL)
+  if (cachedEntities.length > 0) {
+    return cachedEntities.includes(entityName) ? "timed" : false;
+  }
+
+  // Default: timed cache for all entities
+  return "timed";
+}
+
+/**
  * Get data from cache
  */
-function getCache(key) {
+function getCache(key, entityName = null) {
   try {
+    // Check if this entity should use cache
+    const cacheType = entityName ? shouldUseCache(entityName) : "timed";
+    if (cacheType === false) {
+      console.log(`[Cache SKIP] ${key} (entity not cached)`);
+      return null;
+    }
+
     const data = cache.get(key);
     if (data !== undefined) {
-      console.log(`[Cache HIT] ${key}`);
+      const cacheLabel = cacheType === "permanent" ? "PERMANENT" : "TIMED";
+      console.log(`[Cache HIT ${cacheLabel}] ${key}`);
       return data;
     }
     console.log(`[Cache MISS] ${key}`);
@@ -75,14 +113,30 @@ function getCache(key) {
 /**
  * Set data in cache
  */
-function setCache(key, data, ttl = null) {
+function setCache(key, data, ttl = null, entityName = null) {
   try {
-    if (ttl) {
-      cache.set(key, data, ttl);
-    } else {
-      cache.set(key, data);
+    // Check if this entity should use cache
+    const cacheType = entityName ? shouldUseCache(entityName) : "timed";
+    if (cacheType === false) {
+      console.log(`[Cache SKIP] ${key} (entity not cached)`);
+      return false;
     }
-    console.log(`[Cache SET] ${key} (TTL: ${ttl || "24h"})`);
+
+    // Determine TTL based on cache type
+    let finalTTL = ttl;
+    if (!finalTTL) {
+      if (cacheType === "permanent") {
+        finalTTL = 0; // Never expires
+      } else {
+        finalTTL = 86400; // 24 hours
+      }
+    }
+
+    cache.set(key, data, finalTTL);
+
+    const ttlLabel =
+      finalTTL === 0 ? "PERMANENT" : `${Math.round(finalTTL / 3600)}h`;
+    console.log(`[Cache SET] ${key} (TTL: ${ttlLabel})`);
     return true;
   } catch (error) {
     console.error(`[Cache Error] Failed to set ${key}:`, error.message);
@@ -155,6 +209,28 @@ function getCacheKeys() {
   return cache.keys();
 }
 
+/**
+ * Get list of entities with timed cache (24-hour TTL)
+ */
+function getCachedEntities() {
+  const cachedEntities = process.env.CACHE_ENTITIES
+    ? process.env.CACHE_ENTITIES.split(",").map((e) => e.trim())
+    : [];
+
+  return cachedEntities;
+}
+
+/**
+ * Get list of entities with permanent cache (never expires, fastest)
+ */
+function getNoCacheEntities() {
+  const noCacheEntities = process.env.NO_CACHE_ENTITIES
+    ? process.env.NO_CACHE_ENTITIES.split(",").map((e) => e.trim())
+    : [];
+
+  return noCacheEntities;
+}
+
 module.exports = {
   cache,
   getCacheKey,
@@ -165,4 +241,7 @@ module.exports = {
   clearAllCache,
   getCacheStats,
   getCacheKeys,
+  shouldUseCache,
+  getCachedEntities,
+  getNoCacheEntities,
 };

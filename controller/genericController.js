@@ -5,6 +5,7 @@ const {
   getCache,
   setCache,
   deleteCacheByEntity,
+  shouldUseCache,
 } = require("../utils/cache");
 const { revalidateFrontends } = require("../utils/revalidateFrontends");
 
@@ -58,14 +59,14 @@ function includesLoose(hay, needle) {
 /* ------------------------------ Paging helper ------------------------------ */
 // Fetch ALL records for list endpoints (safe for 120 records; scalable)
 async function fetchAllRecords(entityName, { orderBy, order, select } = {}) {
-  // Check cache first
+  // Check cache first (only if entity should be cached)
   const cacheKey = getCacheKey(entityName, {
     type: "all",
     orderBy: orderBy || "",
     order: order || "",
   });
 
-  const cached = getCache(cacheKey);
+  const cached = getCache(cacheKey, entityName);
   if (cached) {
     return cached;
   }
@@ -109,8 +110,8 @@ async function fetchAllRecords(entityName, { orderBy, order, select } = {}) {
     total: total !== null ? total : all.length,
   };
 
-  // Store in cache for 24 hours
-  setCache(cacheKey, result);
+  // Store in cache for 24 hours (only if entity should be cached)
+  setCache(cacheKey, result, null, entityName);
 
   return result;
 }
@@ -397,17 +398,17 @@ const createEntityController = (entityName) => {
         req.query.populate === "true" ||
         req.query.populate === "1";
 
-      // Check cache first
+      // Check cache first (only if entity should be cached)
       const cacheKey = getCacheKey(entityName, {
         type: "single",
         id: req.params.id,
       });
 
-      let data = getCache(cacheKey);
+      let data = getCache(cacheKey, entityName);
 
       if (!data) {
         data = await espoRequest(`/${entityName}/${req.params.id}`);
-        setCache(cacheKey, data);
+        setCache(cacheKey, data, null, entityName);
       }
 
       let record = data;
