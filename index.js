@@ -125,7 +125,7 @@ app.get("/", (req, res) => {
         "Register new account (email, firstName, lastName, phoneNumber)",
       "POST /:base/auth/login": "Login with existing account (email)",
       "POST /:base/auth/verify-otp": "Verify OTP code (email, otp)",
-      "GET /:base/auth/health": "Auth service health check ",
+      "GET /:base/auth/health": "Auth service health check ok",
     },
   });
 });
