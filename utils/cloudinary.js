@@ -115,15 +115,13 @@ function applyCloudinaryVariants(record, imageFields = []) {
       return; // Skip if no URL exists
     }
 
-    // Remove "CloudUrl" suffix if present to get base name for variant fields
-    const baseField = fieldName.replace(/CloudUrl$/i, "");
-
-    // Add base URL (original)
-    result[`${baseField}UrlBase`] = baseUrl;
+    // Keep the full field name and append variant suffix
+    // e.g., image1CloudUrl → image1CloudUrlBase, image1CloudUrlWeb, etc.
+    result[`${fieldName}Base`] = baseUrl;
 
     // Add all variants
     Object.keys(CLOUDINARY_TRANSFORMS).forEach((variant) => {
-      const variantField = `${baseField}Url${variant.charAt(0).toUpperCase() + variant.slice(1)}`;
+      const variantField = `${fieldName}${variant.charAt(0).toUpperCase() + variant.slice(1)}`;
       result[variantField] = buildCloudinaryUrl(baseUrl, variant);
     });
   });
