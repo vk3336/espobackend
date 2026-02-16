@@ -292,7 +292,7 @@ const verifyOtp = async (req, res) => {
 /**
  * Register - Create new customer account with OTP verification
  */
-register = async (req, res) => {
+const register = async (req, res) => {
   try {
     const { email, firstName, lastName, name, phoneNumber } = req.body;
 

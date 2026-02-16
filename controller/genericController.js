@@ -5,7 +5,6 @@ const {
   getCache,
   setCache,
   deleteCacheByEntity,
-  shouldUseCache,
 } = require("../utils/cache");
 const { revalidateFrontends } = require("../utils/revalidateFrontends");
 const { applyCloudinaryVariants } = require("../utils/cloudinary");
