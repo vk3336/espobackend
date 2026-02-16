@@ -8,6 +8,7 @@ const {
   shouldUseCache,
 } = require("../utils/cache");
 const { revalidateFrontends } = require("../utils/revalidateFrontends");
+const { applyCloudinaryVariants } = require("../utils/cloudinary");
 
 /* ------------------------------ ENV helpers ------------------------------ */
 function cleanStr(v) {
@@ -221,6 +222,62 @@ const getEntityPopulateConfig = (entityName) => {
   return configs[entityName] || [];
 };
 
+/* ------------------------------ Cloudinary image fields config ------------------------------ */
+const getEntityImageFields = (entityName) => {
+  const configs = {
+    // ✅ Use EXACT field names from EspoCRM (same as in your database)
+    CProduct: ["image1CloudUrl", "image2CloudUrl", "image3CloudUrl"],
+    CCollection: ["collectionImage1CloudUrl"],
+    CBlog: ["blogImage1CloudUrl", "blogImage2CloudUrl"],
+    CAuthor: ["authorimage"], // ✅ Exact field name from EspoCRM
+    CCompanyInformation: ["companyLogoCloudUrl", "companyImageCloudUrl"],
+    CSiteSettings: ["siteLogoCloudUrl", "siteImageCloudUrl"],
+    CTopicPage: ["topicImageCloudUrl"],
+    // Add your new entity here with EXACT field names:
+    // CUser: ["profileImageCloudUrl", "coverImageCloudUrl"],
+  };
+
+  return configs[entityName] || [];
+};
+
+/* ------------------------------ Apply Cloudinary variants to records ------------------------------ */
+const applyCloudinaryToRecords = (records, entityName) => {
+  const imageFields = getEntityImageFields(entityName);
+
+  if (imageFields.length === 0 && entityName !== "CProduct") {
+    return records;
+  }
+
+  const processRecord = (record) => {
+    if (!record || typeof record !== "object") {
+      return record;
+    }
+
+    // Apply Cloudinary to main record
+    let processed =
+      imageFields.length > 0
+        ? applyCloudinaryVariants(record, imageFields)
+        : { ...record };
+
+    // Handle nested collection object for CProduct
+    if (entityName === "CProduct" && processed.collection) {
+      const collectionImageFields = getEntityImageFields("CCollection");
+      processed.collection = applyCloudinaryVariants(
+        processed.collection,
+        collectionImageFields,
+      );
+    }
+
+    return processed;
+  };
+
+  if (Array.isArray(records)) {
+    return records.map(processRecord);
+  } else {
+    return processRecord(records);
+  }
+};
+
 /* ------------------------------ Controller factory ------------------------------ */
 const createEntityController = (entityName) => {
   // Get all records
@@ -267,6 +324,12 @@ const createEntityController = (entityName) => {
             populateConfig,
           );
         }
+
+        // ✅ Apply Cloudinary variants
+        paginatedRecords = applyCloudinaryToRecords(
+          paginatedRecords,
+          entityName,
+        );
 
         return res.json({
           success: true,
@@ -336,6 +399,12 @@ const createEntityController = (entityName) => {
           );
         }
 
+        // ✅ Apply Cloudinary variants
+        paginatedRecords = applyCloudinaryToRecords(
+          paginatedRecords,
+          entityName,
+        );
+
         return res.json({
           success: true,
           data: paginatedRecords,
@@ -371,6 +440,9 @@ const createEntityController = (entityName) => {
           populateConfig,
         );
       }
+
+      // ✅ Apply Cloudinary variants
+      records = applyCloudinaryToRecords(records, entityName);
 
       res.json({
         success: true,
@@ -422,6 +494,9 @@ const createEntityController = (entityName) => {
         );
         record = populatedRecords[0];
       }
+
+      // ✅ Apply Cloudinary variants
+      record = applyCloudinaryToRecords(record, entityName);
 
       res.json({ success: true, data: record, entity: entityName });
     } catch (e) {
@@ -544,6 +619,9 @@ const createEntityController = (entityName) => {
           populateConfig,
         );
       }
+
+      // ✅ Apply Cloudinary variants
+      paginatedRecords = applyCloudinaryToRecords(paginatedRecords, entityName);
 
       res.json({
         success: true,
@@ -690,6 +768,9 @@ const createEntityController = (entityName) => {
         entityName,
         populateConfig,
       );
+
+      // ✅ Apply Cloudinary variants
+      paginatedRecords = applyCloudinaryToRecords(paginatedRecords, entityName);
 
       return res.json({
         success: true,
