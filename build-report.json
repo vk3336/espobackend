@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-02-16T11:57:14.543Z",
+  "timestamp": "2026-02-17T09:26:19.381Z",
   "status": "success",
   "summary": {
     "total": 40,
-    "passed": 39,
-    "warnings": 1,
+    "passed": 40,
+    "warnings": 0,
     "failed": 0
   },
   "checks": [
@@ -57,8 +57,8 @@
       "message": "ESPO_ENTITIES is configured"
     },
     {
-      "status": "warn",
-      "message": "Optional environment variable not set: PORT"
+      "status": "pass",
+      "message": "PORT is configured"
     },
     {
       "status": "pass",
@@ -170,7 +170,5 @@
     }
   ],
   "errors": [],
-  "warnings": [
-    "Optional environment variable not set: PORT"
-  ]
+  "warnings": []
 }

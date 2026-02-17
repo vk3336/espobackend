@@ -231,7 +231,13 @@ const getEntityImageFields = (entityName) => {
     CAuthor: ["authorimage"], // ✅ Exact field name from EspoCRM
     CCompanyInformation: ["companyLogoCloudUrl", "companyImageCloudUrl"],
     CSiteSettings: ["siteLogoCloudUrl", "siteImageCloudUrl"],
-    CTopicPage: ["topicImageCloudUrl"],
+    CTopicPage: [
+      "topicImageCloudUrl",
+      "image1CloudUrl",
+      "image2CloudUrl",
+      "image3CloudUrl",
+      "image4CloudUrl",
+    ],
     // Add your new entity here with EXACT field names:
     // CUser: ["profileImageCloudUrl", "coverImageCloudUrl"],
   };
