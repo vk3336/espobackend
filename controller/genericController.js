@@ -132,6 +132,24 @@ const COLLECTION_SELECT_FIELDS = parseCsvEnvList(
   DEFAULT_COLLECTION_SELECT_FIELDS,
 );
 
+/* ------------------------------ Product fields ------------------------------ */
+const DEFAULT_PRODUCT_SELECT_FIELDS = [
+  "id",
+  "name",
+  "slug",
+  "productImage1CloudUrl",
+  "altTextProductImage1",
+  "price",
+  "salePrice",
+  "stockQuantity",
+  "sku",
+];
+
+const PRODUCT_SELECT_FIELDS = parseCsvEnvList(
+  "ESPO_PRODUCT_SELECT_FIELDS",
+  DEFAULT_PRODUCT_SELECT_FIELDS,
+);
+
 /* ------------------------------ Bulk populate ------------------------------ */
 const populateRelatedDataBulk = async (
   records,
@@ -153,8 +171,9 @@ const populateRelatedDataBulk = async (
   const collectionConfig = populateFields.find(
     (f) => f.fieldName === "collection",
   );
+  const productConfig = populateFields.find((f) => f.fieldName === "product");
   const otherConfigs = populateFields.filter(
-    (f) => f.fieldName !== "collection",
+    (f) => f.fieldName !== "collection" && f.fieldName !== "product",
   );
 
   let result = [...records];
@@ -165,6 +184,15 @@ const populateRelatedDataBulk = async (
       targetField: "collection",
       collectionEntity: collectionConfig.relatedEntity || "CCollection",
       select: COLLECTION_SELECT_FIELDS,
+    });
+  }
+
+  if (productConfig) {
+    result = await attachCollections(result, {
+      idField: productConfig.idField || "productId",
+      targetField: "product",
+      collectionEntity: productConfig.relatedEntity || "CProduct",
+      select: PRODUCT_SELECT_FIELDS,
     });
   }
 
@@ -214,6 +242,13 @@ const getEntityPopulateConfig = (entityName) => {
         fieldName: "modifiedBy",
         relatedEntity: "User",
         idField: "modifiedById",
+      },
+    ],
+    CWishlist: [
+      {
+        fieldName: "product",
+        relatedEntity: "CProduct",
+        idField: "productId",
       },
     ],
   };
@@ -294,6 +329,7 @@ const createEntityController = (entityName) => {
 
       const populate =
         entityName === "CProduct" ||
+        entityName === "CWishlist" ||
         req.query.populate === "true" ||
         req.query.populate === "1";
 
@@ -472,6 +508,7 @@ const createEntityController = (entityName) => {
     try {
       const populate =
         entityName === "CProduct" ||
+        entityName === "CWishlist" ||
         req.query.populate === "true" ||
         req.query.populate === "1";
 
@@ -591,6 +628,7 @@ const createEntityController = (entityName) => {
 
       const populate =
         entityName === "CProduct" ||
+        entityName === "CWishlist" ||
         req.query.populate === "true" ||
         req.query.populate === "1";
 
