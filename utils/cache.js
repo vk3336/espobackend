@@ -56,9 +56,10 @@ function getCacheKey(entityName, params = {}) {
 
 /**
  * Check if an entity should use cache
- * Returns: 'timed' | false
+ * Returns: 'timed' | 'short' | false
  * - 'timed': CACHE_ENTITIES (24-hour TTL)
- * - false: NO_CACHE_ENTITIES (don't cache, always fresh)
+ * - 'short': NO_CACHE_ENTITIES (5-second TTL for burst protection)
+ * - false: Don't cache at all
  */
 function shouldUseCache(entityName) {
   const cachedEntities = process.env.CACHE_ENTITIES
@@ -69,9 +70,10 @@ function shouldUseCache(entityName) {
     ? process.env.NO_CACHE_ENTITIES.split(",").map((e) => e.trim())
     : [];
 
-  // NO_CACHE_ENTITIES = Don't cache (always fresh from EspoCRM)
+  // NO_CACHE_ENTITIES = Short cache (5 seconds) for burst protection
+  // This prevents hammering EspoCRM with duplicate requests
   if (noCacheEntities.includes(entityName)) {
-    return false;
+    return "short";
   }
 
   // CACHE_ENTITIES = Timed cache (24-hour TTL)
@@ -120,12 +122,26 @@ function setCache(key, data, ttl = null, entityName = null) {
       return false;
     }
 
-    // Determine TTL based on cache type (always 24 hours for timed cache)
-    let finalTTL = ttl || 86400; // 24 hours
+    // Determine TTL based on cache type
+    let finalTTL = ttl;
+    if (!finalTTL) {
+      if (cacheType === "short") {
+        // Use configurable short TTL for NO_CACHE entities (default: 5 seconds)
+        const shortTTL = parseInt(process.env.NO_CACHE_SHORT_TTL_SECONDS) || 5;
+        finalTTL = shortTTL > 0 ? shortTTL : 0; // 0 means no cache at all
+        if (finalTTL === 0) {
+          console.log(`[Cache SKIP] ${key} (short TTL disabled)`);
+          return false;
+        }
+      } else {
+        finalTTL = 86400; // 24 hours for regular cache
+      }
+    }
 
     cache.set(key, data, finalTTL);
 
-    const ttlLabel = `${Math.round(finalTTL / 3600)}h`;
+    const ttlLabel =
+      finalTTL < 60 ? `${finalTTL}s` : `${Math.round(finalTTL / 3600)}h`;
     console.log(`[Cache SET] ${key} (TTL: ${ttlLabel})`);
     return true;
   } catch (error) {

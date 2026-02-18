@@ -29,7 +29,7 @@ class RateLimiter {
 // Create a rate limiter instance with configurable settings
 const rateLimiter = new RateLimiter(
   parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 10,
-  parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 1000
+  parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 1000,
 );
 
 // Retry mechanism with exponential backoff
@@ -46,7 +46,7 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
       const delay = baseDelay * Math.pow(2, attempt - 1);
       console.warn(
         `Request failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms:`,
-        error.message
+        error.message,
       );
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -65,8 +65,9 @@ async function espoRequest(path, { method = "GET", body, query } = {}) {
 
     if (query && typeof query === "object") {
       for (const [k, v] of Object.entries(query)) {
-        if (v !== undefined && v !== null && v !== "")
-          {url.searchParams.set(k, String(v));}
+        if (v !== undefined && v !== null && v !== "") {
+          url.searchParams.set(k, String(v));
+        }
       }
     }
 
@@ -85,9 +86,12 @@ async function espoRequest(path, { method = "GET", body, query } = {}) {
           "Content-Type": "application/json",
           "X-Api-Key": process.env.ESPO_API_KEY,
           Connection: "keep-alive", // Enable connection reuse
+          "Accept-Encoding": "gzip, deflate, br", // Enable compression
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
+        // Enable HTTP/2 and connection pooling
+        keepalive: true,
       });
 
       clearTimeout(timeoutId);
@@ -103,7 +107,7 @@ async function espoRequest(path, { method = "GET", body, query } = {}) {
       if (!res.ok) {
         console.error(
           `[espoRequest] HTTP ${res.status} error from ${url.toString()}:`,
-          data
+          data,
         );
         const err = new Error("EspoCRM request failed");
         err.status = res.status;
