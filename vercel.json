@@ -7,9 +7,6 @@
     { "src": "/(.*)", "dest": "/index.js" }
   ],
   "crons": [
-    {
-      "path": "/health",
-      "schedule": "*/5 * * * *"
-    }
+    { "path": "/health", "schedule": "0 2 */2 * *" }
   ]
 }
