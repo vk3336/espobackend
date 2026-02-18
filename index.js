@@ -215,31 +215,61 @@ if (require.main === module) {
       });
     });
 
-    // Start IndexNow scheduler
-    startIndexNowScheduler();
+    const RUN_STARTUP_JOBS = process.env.RUN_STARTUP_JOBS !== "false";
 
-    // Warm up cache with all entities
-    console.log("\n[Startup] Warming up cache...");
-    await warmUpCache(entities);
+    if (RUN_STARTUP_JOBS) {
+      // Start IndexNow scheduler
+      startIndexNowScheduler();
 
-    // Schedule automatic cache refresh every 24 hours
-    scheduleCacheRefresh(entities);
+      // Warm up cache with all entities (background)
+      console.log("\n[Startup] Warming up cache (background)...");
+      setImmediate(() => {
+        warmUpCache(entities)
+          .then(() => {
+            console.log("[Startup] Cache warmed up successfully");
+            // Schedule automatic cache refresh every 24 hours
+            scheduleCacheRefresh(entities);
+          })
+          .catch((error) => {
+            console.error("[Startup] Cache warm-up failed:", error.message);
+          });
+      });
+    } else {
+      console.log(
+        "\n[Startup] Skipping background jobs (RUN_STARTUP_JOBS=false)",
+      );
+    }
 
-    console.log("\n[Startup] Server ready with cache enabled!");
+    console.log("\n[Startup] Server ready!");
   });
 }
 
 // Start IndexNow scheduler for serverless environments
 if (process.env.NODE_ENV === "production") {
-  startIndexNowScheduler();
+  const RUN_STARTUP_JOBS = process.env.RUN_STARTUP_JOBS === "true";
 
-  // Warm up cache in production (Vercel serverless)
-  warmUpCache(entities)
-    .then(() => {
-      console.log("[Production] Cache warmed up successfully");
-      scheduleCacheRefresh(entities);
-    })
-    .catch((error) => {
-      console.error("[Production] Cache warm-up failed:", error.message);
+  if (RUN_STARTUP_JOBS) {
+    console.log(
+      "[Startup] Running background jobs (schedulers + cache warmer)",
+    );
+
+    // Start IndexNow scheduler
+    startIndexNowScheduler();
+
+    // Warm up cache in background (non-blocking)
+    console.log("[Startup] Warming up cache (background)...");
+    setImmediate(() => {
+      warmUpCache(entities)
+        .then(() => {
+          console.log("[Production] Cache warmed up successfully");
+          scheduleCacheRefresh(entities);
+        })
+        .catch((error) => {
+          console.error("[Production] Cache warm-up failed:", error.message);
+        });
     });
+  } else {
+    console.log("[Startup] Skipping background jobs (RUN_STARTUP_JOBS=false)");
+    console.log("[Startup] Cache will populate on-demand as requests come in");
+  }
 }
