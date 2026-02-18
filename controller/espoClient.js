@@ -32,6 +32,14 @@ const rateLimiter = new RateLimiter(
   parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 1000,
 );
 
+// In-flight de-duplication (single-flight) to avoid duplicate Espo hits during bursts
+const inflight = new Map();
+
+function makeInflightKey({ method, url, body }) {
+  const bodyStr = body ? JSON.stringify(body) : "";
+  return `${method}:${url}:${bodyStr}`;
+}
+
 // Retry mechanism with exponential backoff
 async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -74,57 +82,81 @@ async function espoRequest(path, { method = "GET", body, query } = {}) {
     console.log(`[espoRequest] Making request to: ${url.toString()}`);
     console.log(`[espoRequest] Method: ${method}, Query:`, query);
 
+    // In-flight de-duplication
+    const inflightEnabled =
+      String(process.env.INFLIGHT_DEDUP_ENABLED || "true") === "true";
+
+    const inflightKey = makeInflightKey({
+      method,
+      url: url.toString(),
+      body,
+    });
+
+    if (inflightEnabled && inflight.has(inflightKey)) {
+      console.log(`[espoRequest] Using in-flight request: ${inflightKey}`);
+      return inflight.get(inflightKey);
+    }
+
     // Create AbortController for timeout
     const controller = new AbortController();
     const timeoutMs = parseInt(process.env.REQUEST_TIMEOUT_MS) || 30000;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    try {
-      const res = await fetch(url.toString(), {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          "X-Api-Key": process.env.ESPO_API_KEY,
-          Connection: "keep-alive", // Enable connection reuse
-          "Accept-Encoding": "gzip, deflate, br", // Enable compression
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal,
-        // Enable HTTP/2 and connection pooling
-        keepalive: true,
-      });
-
-      clearTimeout(timeoutId);
-
-      const text = await res.text();
-      let data;
+    const p = (async () => {
       try {
-        data = text ? JSON.parse(text) : null;
-      } catch {
-        data = text;
-      }
+        const res = await fetch(url.toString(), {
+          method,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Api-Key": process.env.ESPO_API_KEY,
+            Connection: "keep-alive",
+            "Accept-Encoding": "gzip, deflate, br",
+          },
+          body: body ? JSON.stringify(body) : undefined,
+          signal: controller.signal,
+          keepalive: true,
+        });
 
-      if (!res.ok) {
-        console.error(
-          `[espoRequest] HTTP ${res.status} error from ${url.toString()}:`,
-          data,
-        );
-        const err = new Error("EspoCRM request failed");
-        err.status = res.status;
-        err.data = data;
-        err.url = url.toString();
-        throw err;
-      }
+        clearTimeout(timeoutId);
 
-      return data;
-    } catch (error) {
-      clearTimeout(timeoutId);
-      if (error.name === "AbortError") {
-        const timeoutError = new Error("Request timeout");
-        timeoutError.status = 408;
-        throw timeoutError;
+        const text = await res.text();
+        let data;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = text;
+        }
+
+        if (!res.ok) {
+          console.error(
+            `[espoRequest] HTTP ${res.status} error from ${url.toString()}:`,
+            data,
+          );
+          const err = new Error("EspoCRM request failed");
+          err.status = res.status;
+          err.data = data;
+          err.url = url.toString();
+          throw err;
+        }
+
+        return data;
+      } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === "AbortError") {
+          const timeoutError = new Error("Request timeout");
+          timeoutError.status = 408;
+          throw timeoutError;
+        }
+        throw error;
       }
-      throw error;
+    })();
+
+    if (inflightEnabled) inflight.set(inflightKey, p);
+
+    try {
+      return await p;
+    } finally {
+      if (inflightEnabled) inflight.delete(inflightKey);
     }
   });
 }
