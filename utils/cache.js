@@ -56,10 +56,9 @@ function getCacheKey(entityName, params = {}) {
 
 /**
  * Check if an entity should use cache
- * Returns: 'permanent' | 'timed' | false
- * - 'permanent': NO_CACHE_ENTITIES (fastest, never expires)
+ * Returns: 'timed' | false
  * - 'timed': CACHE_ENTITIES (24-hour TTL)
- * - false: Don't cache
+ * - false: NO_CACHE_ENTITIES (don't cache, always fresh)
  */
 function shouldUseCache(entityName) {
   const cachedEntities = process.env.CACHE_ENTITIES
@@ -70,9 +69,9 @@ function shouldUseCache(entityName) {
     ? process.env.NO_CACHE_ENTITIES.split(",").map((e) => e.trim())
     : [];
 
-  // NO_CACHE_ENTITIES = Permanent cache (fastest, never expires)
+  // NO_CACHE_ENTITIES = Don't cache (always fresh from EspoCRM)
   if (noCacheEntities.includes(entityName)) {
-    return "permanent";
+    return false;
   }
 
   // CACHE_ENTITIES = Timed cache (24-hour TTL)
@@ -98,8 +97,7 @@ function getCache(key, entityName = null) {
 
     const data = cache.get(key);
     if (data !== undefined) {
-      const cacheLabel = cacheType === "permanent" ? "PERMANENT" : "TIMED";
-      console.log(`[Cache HIT ${cacheLabel}] ${key}`);
+      console.log(`[Cache HIT] ${key}`);
       return data;
     }
     console.log(`[Cache MISS] ${key}`);
@@ -122,20 +120,12 @@ function setCache(key, data, ttl = null, entityName = null) {
       return false;
     }
 
-    // Determine TTL based on cache type
-    let finalTTL = ttl;
-    if (!finalTTL) {
-      if (cacheType === "permanent") {
-        finalTTL = 0; // Never expires
-      } else {
-        finalTTL = 86400; // 24 hours
-      }
-    }
+    // Determine TTL based on cache type (always 24 hours for timed cache)
+    let finalTTL = ttl || 86400; // 24 hours
 
     cache.set(key, data, finalTTL);
 
-    const ttlLabel =
-      finalTTL === 0 ? "PERMANENT" : `${Math.round(finalTTL / 3600)}h`;
+    const ttlLabel = `${Math.round(finalTTL / 3600)}h`;
     console.log(`[Cache SET] ${key} (TTL: ${ttlLabel})`);
     return true;
   } catch (error) {
