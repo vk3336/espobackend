@@ -9,9 +9,9 @@
  * Critical for: PageSpeed, LCP, SEO, PDF quality, Email rendering, Bandwidth optimization
  */
 
-// ✅ Standard Cloudinary transformation presets (DO NOT MODIFY NAMES)
+// ✅ Standard Cloudinary transformation presets (DO NOT MODIFY NAMES) w_auto,dpr_auto
 const CLOUDINARY_TRANSFORMS = {
-  web: "f_auto,q_auto,w_auto,dpr_auto,c_limit",
+  web: "f_auto,q_auto,c_limit",
   email: "f_jpg,q_75,w_600,c_limit",
   pdf: "f_jpg,q_80,w_1200,c_limit",
   card: "f_auto,q_auto,w_300,h_300,c_fill,g_auto",
