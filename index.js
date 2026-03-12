@@ -11,6 +11,7 @@ const adminChatRoutes = require("./routes/adminChat");
 const indexnowRoutes = require("./routes/indexnow");
 const cacheRoutes = require("./routes/cache");
 const authRoutes = require("./routes/auth");
+const dynamicSectionRoutes = require("./routes/dynamicSection");
 const { startIndexNowScheduler } = require("./utils/indexnowScheduler");
 const { warmUpCache, scheduleCacheRefresh } = require("./utils/cacheWarmer");
 
@@ -80,6 +81,9 @@ apiBaseNames.forEach((baseName) => {
 
   // Auth endpoints (OTP)
   app.use(`/${baseName}/auth`, authRoutes);
+
+  // Dynamic section endpoint
+  app.use(`/${baseName}/dynamicsection`, dynamicSectionRoutes);
 
   // IndexNow endpoints
   app.use(`/${baseName}/indexnow`, indexnowRoutes);

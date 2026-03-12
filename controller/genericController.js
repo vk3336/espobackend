@@ -858,4 +858,209 @@ const createEntityController = (entityName) => {
   };
 };
 
-module.exports = { createEntityController };
+/* ------------------------------ Dynamic Section (Standalone) ------------------------------ */
+// ✅ Dynamic section: search by merchtag in TopicPage.slug and Product.merchTags
+const getDynamicSection = async (req, res) => {
+  try {
+    const { merchtag } = req.params;
+
+    if (!merchtag) {
+      return res.status(400).json({
+        success: false,
+        error: "merchtag parameter is required",
+      });
+    }
+
+    const searchTerm = normText(merchtag);
+
+    // Fetch all TopicPage records
+    const topicPageData = await fetchAllRecords("CTopicPage", {
+      orderBy: req.query.orderBy,
+      order: req.query.order,
+    });
+
+    // Fetch all Product records
+    const productData = await fetchAllRecords("CProduct", {
+      orderBy: req.query.orderBy,
+      order: req.query.order,
+    });
+
+    // Filter TopicPage records where slug matches merchtag
+    const matchingTopicPages = (topicPageData?.list ?? []).filter((record) => {
+      const slug = record.slug;
+      return slug && eqLoose(slug, searchTerm);
+    });
+
+    // Filter Product records where merchTags contains merchtag
+    let matchingProducts = (productData?.list ?? []).filter((record) => {
+      const merchTags = record.merchTags;
+      if (!merchTags || !Array.isArray(merchTags)) return false;
+      return merchTags.some((tag) => eqLoose(tag, searchTerm));
+    });
+
+    // Populate related data for products
+    if (matchingProducts.length > 0) {
+      const populateConfig = getEntityPopulateConfig("CProduct");
+      matchingProducts = await populateRelatedDataBulk(
+        matchingProducts,
+        "CProduct",
+        populateConfig,
+      );
+    }
+
+    // Apply Cloudinary variants
+    const processedTopicPages = applyCloudinaryToRecords(
+      matchingTopicPages,
+      "CTopicPage",
+    );
+    const processedProducts = applyCloudinaryToRecords(
+      matchingProducts,
+      "CProduct",
+    );
+
+    // Return combined results
+    res.json({
+      success: true,
+      merchtag,
+      data: {
+        topicPages: processedTopicPages,
+        products: processedProducts,
+      },
+      counts: {
+        topicPages: processedTopicPages.length,
+        products: processedProducts.length,
+        total: processedTopicPages.length + processedProducts.length,
+      },
+    });
+  } catch (e) {
+    console.error(
+      `[getDynamicSection] Error searching for merchtag "${req.params.merchtag}":`,
+      {
+        status: e.status,
+        message: e.message,
+        data: e.data,
+      },
+    );
+    res.status(e.status || 500).json({
+      success: false,
+      error: e.data || e.message,
+      merchtag: req.params.merchtag,
+    });
+  }
+};
+
+// ✅ Get all dynamic sections: return all records where TopicPage.slug matches any Product.merchTags
+const getAllDynamicSections = async (req, res) => {
+  try {
+    // Fetch all TopicPage records
+    const topicPageData = await fetchAllRecords("CTopicPage", {
+      orderBy: req.query.orderBy,
+      order: req.query.order,
+    });
+
+    // Fetch all Product records
+    const productData = await fetchAllRecords("CProduct", {
+      orderBy: req.query.orderBy,
+      order: req.query.order,
+    });
+
+    const allTopicPages = topicPageData?.list ?? [];
+    const allProducts = productData?.list ?? [];
+
+    // Create a set of all TopicPage slugs (normalized)
+    const topicPageSlugs = new Set();
+    allTopicPages.forEach((tp) => {
+      if (tp.slug) {
+        topicPageSlugs.add(normText(tp.slug));
+      }
+    });
+
+    // Find all matching values (slugs that exist in both TopicPage.slug and Product.merchTags)
+    const matchingValues = new Set();
+    allProducts.forEach((product) => {
+      const merchTags = product.merchTags;
+      if (merchTags && Array.isArray(merchTags)) {
+        merchTags.forEach((tag) => {
+          const normalizedTag = normText(tag);
+          if (topicPageSlugs.has(normalizedTag)) {
+            matchingValues.add(normalizedTag);
+          }
+        });
+      }
+    });
+
+    // Build result grouped by matching value
+    const results = [];
+
+    for (const matchValue of matchingValues) {
+      // Filter TopicPages with this slug
+      const matchingTopicPages = allTopicPages.filter((record) => {
+        const slug = record.slug;
+        return slug && eqLoose(slug, matchValue);
+      });
+
+      // Filter Products with this merchTag
+      let matchingProducts = allProducts.filter((record) => {
+        const merchTags = record.merchTags;
+        if (!merchTags || !Array.isArray(merchTags)) return false;
+        return merchTags.some((tag) => eqLoose(tag, matchValue));
+      });
+
+      // Populate related data for products
+      if (matchingProducts.length > 0) {
+        const populateConfig = getEntityPopulateConfig("CProduct");
+        matchingProducts = await populateRelatedDataBulk(
+          matchingProducts,
+          "CProduct",
+          populateConfig,
+        );
+      }
+
+      // Apply Cloudinary variants
+      const processedTopicPages = applyCloudinaryToRecords(
+        matchingTopicPages,
+        "CTopicPage",
+      );
+      const processedProducts = applyCloudinaryToRecords(
+        matchingProducts,
+        "CProduct",
+      );
+
+      results.push({
+        merchtag: matchValue,
+        data: {
+          topicPages: processedTopicPages,
+          products: processedProducts,
+        },
+        counts: {
+          topicPages: processedTopicPages.length,
+          products: processedProducts.length,
+          total: processedTopicPages.length + processedProducts.length,
+        },
+      });
+    }
+
+    // Return all matching sections
+    res.json({
+      success: true,
+      totalSections: results.length,
+      sections: results,
+    });
+  } catch (e) {
+    console.error("[getAllDynamicSections] Error:", {
+      status: e.status,
+      message: e.message,
+      data: e.data,
+    });
+    res.status(e.status || 500).json({
+      success: false,
+      error: e.data || e.message,
+    });
+  }
+};
+
+module.exports = {
+  createEntityController,
+  getDynamicSection,
+  getAllDynamicSections,
+};
