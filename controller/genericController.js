@@ -949,7 +949,7 @@ const getDynamicSection = async (req, res) => {
   }
 };
 
-// ✅ Get all dynamic sections: return all records where TopicPage.slug matches any Product.merchTags
+// ✅ Get all dynamic sections: return only section names where TopicPage.slug matches any Product.merchTags
 const getAllDynamicSections = async (req, res) => {
   try {
     // Fetch all TopicPage records
@@ -989,62 +989,14 @@ const getAllDynamicSections = async (req, res) => {
       }
     });
 
-    // Build result grouped by matching value
-    const results = [];
+    // Convert to array and sort
+    const sectionNames = Array.from(matchingValues).sort();
 
-    for (const matchValue of matchingValues) {
-      // Filter TopicPages with this slug
-      const matchingTopicPages = allTopicPages.filter((record) => {
-        const slug = record.slug;
-        return slug && eqLoose(slug, matchValue);
-      });
-
-      // Filter Products with this merchTag
-      let matchingProducts = allProducts.filter((record) => {
-        const merchTags = record.merchTags;
-        if (!merchTags || !Array.isArray(merchTags)) return false;
-        return merchTags.some((tag) => eqLoose(tag, matchValue));
-      });
-
-      // Populate related data for products
-      if (matchingProducts.length > 0) {
-        const populateConfig = getEntityPopulateConfig("CProduct");
-        matchingProducts = await populateRelatedDataBulk(
-          matchingProducts,
-          "CProduct",
-          populateConfig,
-        );
-      }
-
-      // Apply Cloudinary variants
-      const processedTopicPages = applyCloudinaryToRecords(
-        matchingTopicPages,
-        "CTopicPage",
-      );
-      const processedProducts = applyCloudinaryToRecords(
-        matchingProducts,
-        "CProduct",
-      );
-
-      results.push({
-        merchtag: matchValue,
-        data: {
-          topicPages: processedTopicPages,
-          products: processedProducts,
-        },
-        counts: {
-          topicPages: processedTopicPages.length,
-          products: processedProducts.length,
-          total: processedTopicPages.length + processedProducts.length,
-        },
-      });
-    }
-
-    // Return all matching sections
+    // Return only section names
     res.json({
       success: true,
-      totalSections: results.length,
-      sections: results,
+      totalSections: sectionNames.length,
+      sections: sectionNames,
     });
   } catch (e) {
     console.error("[getAllDynamicSections] Error:", {
