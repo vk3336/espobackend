@@ -113,6 +113,9 @@ app.get("/", (req, res) => {
     entities: entities,
     availableRoutes: availableRoutes,
     apiStructure: {
+      "GET /api/dynamicsection": "To get all the dynamic section value",
+      "GET /api/dynamicsection/:merchtag value":
+        "To get all the dynamic section value as dynamic",
       "GET /:base/:entity": "Get all records",
       "GET /:base/:entity/:id": "Get record by ID",
       "POST /:base/:entity": "Create new record",
