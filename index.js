@@ -1,6 +1,8 @@
 // Only load .env locally (Vercel provides env vars without .env)
 if (process.env.NODE_ENV !== "production") {
-  require("dotenv").config();
+  const dotenv = require("dotenv");
+  const dotenvExpand = require("dotenv-expand");
+  dotenvExpand.expand(dotenv.config());
 }
 
 const express = require("express");
@@ -25,15 +27,23 @@ const PORT = process.env.PORT || 3000;
  */
 app.set("etag", false);
 
-// CORS configuration - support multiple origins
+// CORS configuration - support multiple origins + wildcard "localhost" entry
 const corsOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(",").map((origin) => origin.trim())
-  : ["http://localhost:3000"]; // fallback to localhost:3000
+  ? process.env.CORS_ORIGIN.split(",").map((o) => o.trim())
+  : ["http://localhost:3000"];
+
+const allowAllLocalhost = corsOrigins.includes("localhost");
 
 // Middleware
 app.use(
   cors({
-    origin: corsOrigins,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowAllLocalhost && /^https?:\/\/localhost(:\d+)?$/.test(origin))
+        return callback(null, true);
+      if (corsOrigins.includes(origin)) return callback(null, true);
+      callback(new Error(`CORS: origin ${origin} not allowed`));
+    },
     credentials: true,
   }),
 );
