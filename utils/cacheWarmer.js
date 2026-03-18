@@ -6,21 +6,12 @@ const { getCacheKey, setCache } = require("./cache");
  * This runs on server startup to ensure fast first requests
  */
 async function warmUpCache(entities) {
-  const { getCachedEntities, getNoCacheEntities } = require("./cache");
+  const { getNoCacheEntities } = require("./cache");
 
-  const cachedEntities = getCachedEntities();
   const noCacheEntities = getNoCacheEntities();
 
-  // Determine which entities to warm up (only cached entities)
-  let entitiesToWarm = [];
-
-  if (cachedEntities.length > 0) {
-    // Only warm up entities in CACHE_ENTITIES
-    entitiesToWarm = entities.filter((e) => cachedEntities.includes(e));
-  } else {
-    // Default: warm up all entities except NO_CACHE_ENTITIES
-    entitiesToWarm = entities.filter((e) => !noCacheEntities.includes(e));
-  }
+  // Warm up all entities except NO_CACHE_ENTITIES
+  const entitiesToWarm = entities.filter((e) => !noCacheEntities.includes(e));
 
   if (entitiesToWarm.length === 0) {
     console.log("[Cache Warmer] No entities configured for caching");
@@ -131,20 +122,14 @@ async function warmUpCache(entities) {
  * Schedule periodic cache refresh (only for cached entities)
  */
 function scheduleCacheRefresh(entities) {
-  const { getCachedEntities, getNoCacheEntities } = require("./cache");
+  const { getNoCacheEntities } = require("./cache");
 
-  const cachedEntities = getCachedEntities();
   const noCacheEntities = getNoCacheEntities();
 
-  // Determine which entities to refresh
-  let entitiesToRefresh = [];
-
-  if (cachedEntities.length > 0) {
-    entitiesToRefresh = entities.filter((e) => cachedEntities.includes(e));
-  } else {
-    // Default: refresh all entities except NO_CACHE_ENTITIES
-    entitiesToRefresh = entities.filter((e) => !noCacheEntities.includes(e));
-  }
+  // Refresh all entities except NO_CACHE_ENTITIES
+  const entitiesToRefresh = entities.filter(
+    (e) => !noCacheEntities.includes(e),
+  );
 
   if (entitiesToRefresh.length === 0) {
     console.log("[Cache Warmer] No cached entities to refresh");

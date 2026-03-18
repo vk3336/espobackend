@@ -62,26 +62,16 @@ function getCacheKey(entityName, params = {}) {
  * - false: Don't cache at all
  */
 function shouldUseCache(entityName) {
-  const cachedEntities = process.env.CACHE_ENTITIES
-    ? process.env.CACHE_ENTITIES.split(",").map((e) => e.trim())
-    : [];
-
   const noCacheEntities = process.env.NO_CACHE_ENTITIES
     ? process.env.NO_CACHE_ENTITIES.split(",").map((e) => e.trim())
     : [];
 
   // NO_CACHE_ENTITIES = Short cache (5 seconds) for burst protection
-  // This prevents hammering EspoCRM with duplicate requests
   if (noCacheEntities.includes(entityName)) {
     return "short";
   }
 
-  // CACHE_ENTITIES = Timed cache (24-hour TTL)
-  if (cachedEntities.length > 0) {
-    return cachedEntities.includes(entityName) ? "timed" : false;
-  }
-
-  // Default: timed cache for all entities
+  // Default: timed cache (24-hour TTL) for all other entities
   return "timed";
 }
 
@@ -217,13 +207,10 @@ function getCacheKeys() {
 
 /**
  * Get list of entities with timed cache (24-hour TTL)
+ * All entities except NO_CACHE_ENTITIES are cached by default
  */
 function getCachedEntities() {
-  const cachedEntities = process.env.CACHE_ENTITIES
-    ? process.env.CACHE_ENTITIES.split(",").map((e) => e.trim())
-    : [];
-
-  return cachedEntities;
+  return [];
 }
 
 /**

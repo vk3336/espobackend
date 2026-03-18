@@ -11,14 +11,12 @@ const {
  * GET /indexnow/health
  */
 router.get("/health", (req, res) => {
-  const sitemapUrl =
-    process.env.INDEXNOW_SITEMAP_URL ||
-    `https://${process.env.INDEXNOW_HOST}/sitemap.xml`;
+  const sitemapUrl = `${process.env.FRONTEND_URL}/sitemap.xml`;
 
   const config = {
     schedulerEnabled: process.env.INDEXNOW_SCHEDULER_ENABLED === "true",
-    endpoint: process.env.INDEXNOW_ENDPOINT || "not configured",
-    host: process.env.INDEXNOW_HOST || "not configured",
+    endpoint: "https://api.indexnow.org/indexnow",
+    host: process.env.FRONTEND_URL.replace(/^https?:\/\//, ""),
     keyConfigured: !!process.env.INDEXNOW_KEY,
     sitemapUrl: sitemapUrl,
     schedule: process.env.INDEXNOW_SCHEDULE || "0 2 * * *",
@@ -63,7 +61,7 @@ router.get("/key", (req, res) => {
     instructions: [
       `Create a file named '${process.env.INDEXNOW_KEY}.txt' in your frontend's public directory`,
       `The file content should be exactly: ${process.env.INDEXNOW_KEY}`,
-      `The file should be accessible at: https://${process.env.INDEXNOW_HOST}/${process.env.INDEXNOW_KEY}.txt`,
+      `The file should be accessible at: ${process.env.FRONTEND_URL}/${process.env.INDEXNOW_KEY}.txt`,
     ],
   });
 });
@@ -136,9 +134,7 @@ router.get("/test-sitemap", async (req, res) => {
 
     res.json({
       ok: true,
-      sitemapUrl:
-        process.env.INDEXNOW_SITEMAP_URL ||
-        `https://${process.env.INDEXNOW_HOST}/sitemap.xml`,
+      sitemapUrl: `${process.env.FRONTEND_URL}/sitemap.xml`,
       urlsFound: urls.length,
       sampleUrls: urls.slice(0, 10),
       message: `Found ${urls.length} URLs in sitemap`,

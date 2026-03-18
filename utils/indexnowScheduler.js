@@ -81,9 +81,7 @@ async function runScheduledIndexNow() {
 
   try {
     // Get sitemap URL
-    const sitemapUrl =
-      process.env.INDEXNOW_SITEMAP_URL ||
-      `https://${process.env.INDEXNOW_HOST}/sitemap.xml`;
+    const sitemapUrl = `${process.env.FRONTEND_URL}/sitemap.xml`;
 
     if (!sitemapUrl) {
       console.error("[IndexNow Scheduler] ❌ No sitemap URL configured");
@@ -104,8 +102,8 @@ async function runScheduledIndexNow() {
     );
 
     const result = await submitIndexNow({
-      endpoint: process.env.INDEXNOW_ENDPOINT,
-      host: process.env.INDEXNOW_HOST,
+      endpoint: "https://api.indexnow.org/indexnow",
+      host: process.env.FRONTEND_URL.replace(/^https?:\/\//, ""),
       key: process.env.INDEXNOW_KEY,
       urls: urls,
     });
@@ -148,13 +146,13 @@ function startIndexNowScheduler() {
   }
 
   const schedule = process.env.INDEXNOW_SCHEDULE || "0 2 * * *"; // Default: 2 AM daily
-  const sitemapUrl =
-    process.env.INDEXNOW_SITEMAP_URL ||
-    `https://${process.env.INDEXNOW_HOST}/sitemap.xml`;
+  const sitemapUrl = `${process.env.FRONTEND_URL}/sitemap.xml`;
 
   console.log(`[IndexNow Scheduler] Starting with schedule: ${schedule}`);
   console.log(`[IndexNow Scheduler] Sitemap URL: ${sitemapUrl}`);
-  console.log(`[IndexNow Scheduler] Host: ${process.env.INDEXNOW_HOST}`);
+  console.log(
+    `[IndexNow Scheduler] Host: ${process.env.FRONTEND_URL.replace(/^https?:\/\//, "")}`,
+  );
 
   // Validate cron expression
   if (!cron.validate(schedule)) {
@@ -191,9 +189,7 @@ async function triggerManualIndexNow() {
  * Test sitemap parsing (for debugging)
  */
 async function testSitemapParsing() {
-  const sitemapUrl =
-    process.env.INDEXNOW_SITEMAP_URL ||
-    `https://${process.env.INDEXNOW_HOST}/sitemap.xml`;
+  const sitemapUrl = `${process.env.FRONTEND_URL}/sitemap.xml`;
 
   console.log(`[IndexNow Test] Testing sitemap parsing for: ${sitemapUrl}`);
 

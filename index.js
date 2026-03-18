@@ -67,9 +67,7 @@ app.use((req, res, next) => {
 });
 
 // Dynamic API base names setup
-const apiBaseNames = process.env.API_BASE_NAMES
-  ? process.env.API_BASE_NAMES.split(",").map((name) => name.trim())
-  : ["api"]; // fallback to 'api' if not defined
+const apiBaseNames = ["api"];
 
 // Get entities from environment
 const entities = process.env.ESPO_ENTITIES
