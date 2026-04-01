@@ -262,7 +262,7 @@ const getEntityImageFields = (entityName) => {
     // ✅ Use EXACT field names from EspoCRM (same as in your database)
     CProduct: ["image1CloudUrl", "image2CloudUrl", "image3CloudUrl"],
     CCollection: ["collectionImage1CloudUrl"],
-    CBlog: ["blogImage1CloudUrl", "blogImage2CloudUrl"],
+    CBlog: ["blogimage1CloudURL", "blogimage2CloudURL"],
     CAuthor: ["authorimage"], // ✅ Exact field name from EspoCRM
     CCompanyInformation: ["companyLogoCloudUrl", "companyImageCloudUrl"],
     CSiteSettings: ["siteLogoCloudUrl", "siteImageCloudUrl"],
@@ -288,16 +288,34 @@ const applyCloudinaryToRecords = (records, entityName) => {
     return records;
   }
 
+  const PRODUCT_IMAGE1_FALLBACK =
+    "https://res.cloudinary.com/age-fabric/image/upload/v1773729784/1ProductFallBack_uhxkjr.jpg";
+  const BLOG_IMAGE1_FALLBACK =
+    "https://res.cloudinary.com/age-fabric/image/upload/v1773744244/BlogFallBackImage_snbkg6.jpg";
+
   const processRecord = (record) => {
     if (!record || typeof record !== "object") {
       return record;
     }
 
+    // For CProduct, inject fallback for image1CloudUrl if missing
+    let recordToProcess = record;
+    if (entityName === "CProduct" && !record.image1CloudUrl) {
+      recordToProcess = { ...record, image1CloudUrl: PRODUCT_IMAGE1_FALLBACK };
+    }
+    // For CBlog, inject fallback for blogimage1CloudURL if missing
+    if (entityName === "CBlog" && !record.blogimage1CloudURL) {
+      recordToProcess = {
+        ...recordToProcess,
+        blogimage1CloudURL: BLOG_IMAGE1_FALLBACK,
+      };
+    }
+
     // Apply Cloudinary to main record
     let processed =
       imageFields.length > 0
-        ? applyCloudinaryVariants(record, imageFields)
-        : { ...record };
+        ? applyCloudinaryVariants(recordToProcess, imageFields)
+        : { ...recordToProcess };
 
     // Handle nested collection object for CProduct
     if (entityName === "CProduct" && processed.collection) {
