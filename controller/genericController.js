@@ -273,6 +273,7 @@ const getEntityImageFields = (entityName) => {
       "image3CloudUrl",
       "image4CloudUrl",
     ],
+    CLocation:["image1CloudUrl"],
     // Add your new entity here with EXACT field names:
     // CUser: ["profileImageCloudUrl", "coverImageCloudUrl"],
   };
