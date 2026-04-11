@@ -132,6 +132,14 @@ const COLLECTION_SELECT_FIELDS = parseCsvEnvList(
   DEFAULT_COLLECTION_SELECT_FIELDS,
 );
 
+/* ------------------------------ Location fields ------------------------------ */
+const DEFAULT_LOCATION_SELECT_FIELDS = ["id", "name", "slug"];
+
+const LOCATION_SELECT_FIELDS = parseCsvEnvList(
+  "ESPO_LOCATION_SELECT_FIELDS",
+  DEFAULT_LOCATION_SELECT_FIELDS,
+);
+
 /* ------------------------------ Product fields ------------------------------ */
 const DEFAULT_PRODUCT_SELECT_FIELDS = [
   "id",
@@ -172,8 +180,12 @@ const populateRelatedDataBulk = async (
     (f) => f.fieldName === "collection",
   );
   const productConfig = populateFields.find((f) => f.fieldName === "product");
+  const locationConfig = populateFields.find((f) => f.fieldName === "location");
   const otherConfigs = populateFields.filter(
-    (f) => f.fieldName !== "collection" && f.fieldName !== "product",
+    (f) =>
+      f.fieldName !== "collection" &&
+      f.fieldName !== "product" &&
+      f.fieldName !== "location",
   );
 
   let result = [...records];
@@ -193,6 +205,15 @@ const populateRelatedDataBulk = async (
       targetField: "product",
       collectionEntity: productConfig.relatedEntity || "CProduct",
       select: PRODUCT_SELECT_FIELDS,
+    });
+  }
+
+  if (locationConfig) {
+    result = await attachCollections(result, {
+      idField: locationConfig.idField || "locationId",
+      targetField: "location",
+      collectionEntity: locationConfig.relatedEntity || "CLocation",
+      select: LOCATION_SELECT_FIELDS,
     });
   }
 
@@ -251,6 +272,18 @@ const getEntityPopulateConfig = (entityName) => {
         idField: "productId",
       },
     ],
+    CProductLocation: [
+      {
+        fieldName: "product",
+        relatedEntity: "CProduct",
+        idField: "productId",
+      },
+      {
+        fieldName: "location",
+        relatedEntity: "CLocation",
+        idField: "locationId",
+      },
+    ],
   };
 
   return configs[entityName] || [];
@@ -274,6 +307,7 @@ const getEntityImageFields = (entityName) => {
       "image4CloudUrl",
     ],
     CLocation:["image1CloudUrl"],
+    CProductLocation:["image1CloudUrl"],
     // Add your new entity here with EXACT field names:
     // CUser: ["profileImageCloudUrl", "coverImageCloudUrl"],
   };
@@ -349,6 +383,7 @@ const createEntityController = (entityName) => {
       const populate =
         entityName === "CProduct" ||
         entityName === "CWishlist" ||
+        entityName === "CProductLocation" ||
         req.query.populate === "true" ||
         req.query.populate === "1";
 
@@ -528,6 +563,7 @@ const createEntityController = (entityName) => {
       const populate =
         entityName === "CProduct" ||
         entityName === "CWishlist" ||
+        entityName === "CProductLocation" ||
         req.query.populate === "true" ||
         req.query.populate === "1";
 
@@ -648,6 +684,7 @@ const createEntityController = (entityName) => {
       const populate =
         entityName === "CProduct" ||
         entityName === "CWishlist" ||
+        entityName === "CProductLocation" ||
         req.query.populate === "true" ||
         req.query.populate === "1";
 
