@@ -206,6 +206,27 @@ const populateRelatedDataBulk = async (
       collectionEntity: productConfig.relatedEntity || "CProduct",
       select: PRODUCT_SELECT_FIELDS,
     });
+
+    // For CProductLocation: also populate collection inside each nested product
+    if (entityName === "CProductLocation") {
+      const nestedProducts = result.map((r) => r.product).filter(Boolean);
+      if (nestedProducts.length > 0) {
+        const withCollections = await attachCollections(nestedProducts, {
+          idField: "collectionId",
+          targetField: "collection",
+          collectionEntity: "CCollection",
+          select: COLLECTION_SELECT_FIELDS,
+        });
+        const collectionByProductId = Object.fromEntries(
+          withCollections.map((p) => [p.id, p.collection]),
+        );
+        result = result.map((r) =>
+          r.product
+            ? { ...r, product: { ...r.product, collection: collectionByProductId[r.product.id] || null } }
+            : r,
+        );
+      }
+    }
   }
 
   if (locationConfig) {
@@ -359,6 +380,34 @@ const applyCloudinaryToRecords = (records, entityName) => {
         processed.collection,
         collectionImageFields,
       );
+    }
+
+    // Handle nested product + location for CProductLocation
+    if (entityName === "CProductLocation") {
+      if (processed.product) {
+        const productImageFields = getEntityImageFields("CProduct");
+        let nestedProduct = processed.product;
+        if (!nestedProduct.image1CloudUrl) {
+          nestedProduct = { ...nestedProduct, image1CloudUrl: PRODUCT_IMAGE1_FALLBACK };
+        }
+        nestedProduct = applyCloudinaryVariants(nestedProduct, productImageFields);
+        // Also apply collection images inside the nested product
+        if (nestedProduct.collection) {
+          const collectionImageFields = getEntityImageFields("CCollection");
+          nestedProduct.collection = applyCloudinaryVariants(
+            nestedProduct.collection,
+            collectionImageFields,
+          );
+        }
+        processed.product = nestedProduct;
+      }
+      if (processed.location) {
+        const locationImageFields = getEntityImageFields("CLocation");
+        processed.location = applyCloudinaryVariants(
+          processed.location,
+          locationImageFields,
+        );
+      }
     }
 
     return processed;
