@@ -344,10 +344,8 @@ const applyCloudinaryToRecords = (records, entityName) => {
     return records;
   }
 
-  const PRODUCT_IMAGE1_FALLBACK =
-    "https://res.cloudinary.com/age-fabric/image/upload/v1773729784/1ProductFallBack_uhxkjr.jpg";
-  const BLOG_IMAGE1_FALLBACK =
-    "https://res.cloudinary.com/age-fabric/image/upload/v1773744244/BlogFallBackImage_snbkg6.jpg";
+  const PRODUCT_IMAGE1_FALLBACK = process.env.productfallbackimage1;
+  const BLOG_IMAGE1_FALLBACK = process.env.blogfallbackimage1;
 
   const processRecord = (record) => {
     if (!record || typeof record !== "object") {
