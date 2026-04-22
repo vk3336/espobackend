@@ -25,6 +25,7 @@
     "dotenv-expand": "^12.0.3",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
+    "helmet": "^8.1.0",
     "mongoose": "^9.1.0",
     "node-cache": "^5.1.2",
     "node-cron": "^4.2.1",

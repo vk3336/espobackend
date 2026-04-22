@@ -7,6 +7,7 @@ if (process.env.NODE_ENV !== "production") {
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const { createEntityRoutes } = require("./routes/generic");
 const chatRoutes = require("./routes/chat");
 const adminChatRoutes = require("./routes/adminChat");
@@ -19,6 +20,9 @@ const { warmUpCache, scheduleCacheRefresh } = require("./utils/cacheWarmer");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Security headers (HSTS, Referrer-Policy, X-Frame-Options, etc.)
+app.use(helmet({ contentSecurityPolicy: false }));
 
 /**
  * IMPORTANT for caching:
