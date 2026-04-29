@@ -57,38 +57,75 @@ function includesLoose(hay, needle) {
 }
 
 /* ------------------------------ Paging helper ------------------------------ */
-// Fetch ALL records for list endpoints (safe for 120 records; scalable)
-async function fetchAllRecords(entityName, { orderBy, order, select } = {}) {
-  // Check cache first (only if entity should be cached)
-  const cacheKey = getCacheKey(entityName, {
-    type: "all",
-    orderBy: orderBy || "",
-    order: order || "",
-  });
+// In-flight request tracking to prevent duplicate fetches
+const fetchAllRecordsInflight = new Map();
 
-  const cached = getCache(cacheKey, entityName);
-  if (cached) {
-    return cached;
+// Helper: Convert value to positive number or fallback
+function toPositiveNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+// Helper: Parse EspoCRM date string to milliseconds
+function parseEspoDateMs(value) {
+  if (!value) return 0;
+
+  let iso = String(value).trim();
+  if (!iso) return 0;
+
+  iso = iso.includes("T") ? iso : iso.replace(" ", "T");
+
+  if (!/[zZ]$/.test(iso) && !/[+-]\d{2}:\d{2}$/.test(iso)) {
+    iso += "Z";
   }
 
-  const pageSize = Number(process.env.ESPO_LIST_PAGE_SIZE || 200);
-  const maxTotal = Number(process.env.ESPO_LIST_MAX_TOTAL || 5000);
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+// Helper: Get maximum modifiedAt value from records
+function getMaxModifiedAt(records) {
+  let maxValue = null;
+  let maxMs = 0;
+
+  for (const record of records || []) {
+    const value = record?.modifiedAt;
+    const ms = parseEspoDateMs(value);
+
+    if (value && ms >= maxMs) {
+      maxMs = ms;
+      maxValue = value;
+    }
+  }
+
+  return maxValue;
+}
+
+// Helper: Fetch records with pagination
+async function fetchRecordsPaged(entityName, { orderBy, order, select, where } = {}) {
+  const pageSize = toPositiveNumber(process.env.ESPO_LIST_PAGE_SIZE, 200);
+  const maxTotal = toPositiveNumber(process.env.ESPO_LIST_MAX_TOTAL, 5000);
 
   let offset = 0;
   let all = [];
   let total = null;
 
   while (true) {
-    const query = {
+    const searchParams = {
       maxSize: pageSize,
       offset,
     };
 
-    if (orderBy) query.orderBy = orderBy;
-    if (order) query.order = order;
-    if (select) query.select = select;
+    if (orderBy) searchParams.orderBy = orderBy;
+    if (order) searchParams.order = order;
+    if (select) searchParams.select = select;
+    if (where) searchParams.where = where;
 
-    const data = await espoRequest(`/${entityName}`, { query });
+    const data = await espoRequest(`/${entityName}`, {
+      query: {
+        searchParams: JSON.stringify(searchParams),
+      },
+    });
 
     const list = data?.list ?? [];
     const t = typeof data?.total === "number" ? data.total : null;
@@ -98,22 +135,159 @@ async function fetchAllRecords(entityName, { orderBy, order, select } = {}) {
     all = all.concat(list);
     offset += list.length;
 
-    // stop conditions
     if (list.length === 0) break;
     if (total !== null && offset >= total) break;
-    if (all.length >= maxTotal) break; // safety cap
+    if (all.length >= maxTotal) break;
     if (list.length < pageSize) break;
   }
 
-  const result = {
-    list: all,
+  return {
+    list: all.slice(0, maxTotal),
     total: total !== null ? total : all.length,
   };
+}
 
-  // Store in cache for 24 hours (only if entity should be cached)
-  setCache(cacheKey, result, null, entityName);
+// Helper: Merge records by ID (newer records override older ones)
+function mergeRecordsById(oldRecords, changedRecords) {
+  const byId = new Map();
 
-  return result;
+  for (const record of oldRecords || []) {
+    if (record?.id) byId.set(record.id, record);
+  }
+
+  for (const record of changedRecords || []) {
+    if (record?.id) byId.set(record.id, record);
+  }
+
+  return Array.from(byId.values());
+}
+
+// Fetch ALL records for list endpoints with delta refresh support
+async function fetchAllRecords(entityName, { orderBy, order, select } = {}) {
+  const cacheKey = getCacheKey(entityName, {
+    type: "all",
+    orderBy: orderBy || "",
+    order: order || "",
+  });
+
+  if (fetchAllRecordsInflight.has(cacheKey)) {
+    return fetchAllRecordsInflight.get(cacheKey);
+  }
+
+  const task = (async () => {
+    const cached = getCache(cacheKey, entityName);
+
+    const deltaRefreshSeconds = toPositiveNumber(
+      process.env.ESPO_DELTA_REFRESH_SECONDS,
+      300,
+    );
+
+    const fullRefreshSeconds = toPositiveNumber(
+      process.env.ESPO_FULL_REFRESH_SECONDS,
+      86400,
+    );
+
+    const cacheTtlSeconds = toPositiveNumber(
+      process.env.ESPO_CACHE_TTL_SECONDS,
+      172800,
+    );
+
+    const now = Date.now();
+
+    if (cached) {
+      const meta = cached._cacheMeta || {};
+      const lastRefreshAt = Number(meta.lastRefreshAt || meta.lastFullFetchAt || 0);
+      const lastFullFetchAt = Number(meta.lastFullFetchAt || 0);
+
+      const isDeltaFresh = now - lastRefreshAt < deltaRefreshSeconds * 1000;
+      const needsFullRefresh = now - lastFullFetchAt > fullRefreshSeconds * 1000;
+
+      if (isDeltaFresh) {
+        console.log(`[fetchAllRecords] ${entityName} - serving from cache (fresh)`);
+        return cached;
+      }
+
+      if (!needsFullRefresh) {
+        const lastModifiedAt =
+          meta.maxModifiedAt || getMaxModifiedAt(cached.list || []);
+
+        if (lastModifiedAt) {
+          try {
+            console.log(`[fetchAllRecords] ${entityName} - delta refresh from ${lastModifiedAt}`);
+            const deltaData = await fetchRecordsPaged(entityName, {
+              orderBy: "modifiedAt",
+              order: "asc",
+              select,
+              where: [
+                {
+                  type: "greaterThanOrEquals",
+                  attribute: "modifiedAt",
+                  value: lastModifiedAt,
+                },
+              ],
+            });
+
+            const mergedList = mergeRecordsById(cached.list || [], deltaData.list || []);
+
+            const result = {
+              list: mergedList,
+              total: mergedList.length,
+              _cacheMeta: {
+                lastFullFetchAt,
+                lastRefreshAt: Date.now(),
+                maxModifiedAt: getMaxModifiedAt(mergedList) || lastModifiedAt,
+                refreshType: "delta",
+                deltaRecordsFetched: deltaData.list?.length || 0,
+              },
+            };
+
+            setCache(cacheKey, result, cacheTtlSeconds, entityName);
+            console.log(`[fetchAllRecords] ${entityName} - delta refresh complete: ${deltaData.list?.length || 0} changed, ${mergedList.length} total`);
+            return result;
+          } catch (error) {
+            console.warn(
+              `[fetchAllRecords] Delta refresh failed for ${entityName}; serving cached data:`,
+              error.message,
+            );
+
+            return cached;
+          }
+        }
+      }
+    }
+
+    console.log(`[fetchAllRecords] ${entityName} - full refresh`);
+    const fullData = await fetchRecordsPaged(entityName, {
+      orderBy,
+      order,
+      select,
+    });
+
+    const result = {
+      list: fullData.list,
+      total: fullData.total,
+      _cacheMeta: {
+        lastFullFetchAt: Date.now(),
+        lastRefreshAt: Date.now(),
+        maxModifiedAt: getMaxModifiedAt(fullData.list),
+        refreshType: "full",
+        totalRecordsFetched: fullData.list?.length || 0,
+      },
+    };
+
+    setCache(cacheKey, result, cacheTtlSeconds, entityName);
+    console.log(`[fetchAllRecords] ${entityName} - full refresh complete: ${fullData.list?.length || 0} records`);
+
+    return result;
+  })();
+
+  fetchAllRecordsInflight.set(cacheKey, task);
+
+  try {
+    return await task;
+  } finally {
+    fetchAllRecordsInflight.delete(cacheKey);
+  }
 }
 
 /* ------------------------------ Collection fields ------------------------------ */
