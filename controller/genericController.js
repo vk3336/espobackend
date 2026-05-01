@@ -432,17 +432,6 @@ const populateRelatedDataBulk = async (
   return result;
 };
 
-const _populateRelatedData = async (
-  records,
-  entityName,
-  populateFields = [],
-) => {
-  console.warn(
-    "[DEPRECATED] Using old populateRelatedData - consider switching to populateRelatedDataBulk",
-  );
-  return populateRelatedDataBulk(records, entityName, populateFields);
-};
-
 /* ------------------------------ Populate config ------------------------------ */
 const getEntityPopulateConfig = (entityName) => {
   const configs = {
@@ -487,6 +476,7 @@ const getEntityPopulateConfig = (entityName) => {
 /* ------------------------------ Cloudinary image fields config ------------------------------ */
 const getEntityImageFields = (entityName) => {
   const configs = {
+    // for 6 other type of cloudnary image
     // ✅ Use EXACT field names from EspoCRM (same as in your database)
     CProduct: ["image1CloudUrl", "image2CloudUrl", "image3CloudUrl"],
     CCollection: ["collectionImage1CloudUrl"],

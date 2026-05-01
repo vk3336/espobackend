@@ -206,14 +206,6 @@ function getCacheKeys() {
 }
 
 /**
- * Get list of entities with timed cache (24-hour TTL)
- * All entities except NO_CACHE_ENTITIES are cached by default
- */
-function getCachedEntities() {
-  return [];
-}
-
-/**
  * Get list of entities with permanent cache (never expires, fastest)
  */
 function getNoCacheEntities() {
@@ -235,6 +227,5 @@ module.exports = {
   getCacheStats,
   getCacheKeys,
   shouldUseCache,
-  getCachedEntities,
   getNoCacheEntities,
 };

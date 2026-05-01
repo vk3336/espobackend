@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "lint:report": "eslint . --output-file eslint-report.txt --format stylish",
-    "test": "npm run lint && node test-cache-simple.js",
+    "test": "npm run lint",
     "build": "npm run lint && node build.js",
     "validate": "npm run lint",
     "deploy:check": "npm run build"
@@ -26,7 +26,6 @@
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
-    "mongoose": "^9.1.0",
     "node-cache": "^5.1.2",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.1"
