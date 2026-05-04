@@ -1334,10 +1334,15 @@ async function parseUserMessageWithOpenAI({ message, context }) {
     "You are a routing + extraction engine for a fabric catalogue assistant. Return ONLY JSON.\n" +
     "- Detect language (en, hi, gu, etc.).\n" +
     "- If asking if fabric exists => availability + detail=yesno.\n" +
-    "- If asking for more/specs => details.\n" +
-    "- If asking for list/suggestions => recommend.\n" +
+    "- If asking for more/specs about a SPECIFIC named product => details.\n" +
+    "- If asking for list/suggestions OR asking about 'your products'/'what do you have'/'show me products' => recommend.\n" +
     "- If asking quote/price/contact => lead.\n" +
     "- Extract contactInfo fields if present.\n" +
+    "CRITICAL intent rule:\n" +
+    "  'details' ONLY when user names a specific product (e.g. 'nokia-601', 'majestica 748') OR uses\n" +
+    "   a pronoun referring to a previously named product ('this product', 'it', 'the above', 'tell me more').\n" +
+    "  'recommend' for ALL vague/general product questions: 'tell me about your products',\n" +
+    "   'what products do you have', 'show me your catalogue', 'list your fabrics', 'what do you sell'.\n" +
     "IMPORTANT: translate search cues (color/weave/keywords) into English if possible for matching.\n" +
     "CRITICAL refersToPrevious rule: set refersToPrevious=true ONLY when the user says something like\n" +
     "  'tell me more', 'give me details', 'what about it', 'its specifications' — with NO new product name.\n" +
@@ -1739,14 +1744,22 @@ async function handleChatMessage(req, res) {
 
   if (intent === "details") {
     if (topProductScore >= detailsMinScore) {
-      // User named a product (strong or weak match) — always use the top scored product
+      // User named a specific product — always use the top scored product
       focused = topProduct;
     } else if (!hasProductKeywords) {
-      // User named nothing new — continue with the last discussed item
-      focused = resolveLastFocused() || topProduct || topAll;
+      // User named nothing new
+      const lastFocused = resolveLastFocused();
+      if (lastFocused) {
+        // Continue with the last discussed item (e.g. "tell me more", "yes")
+        focused = lastFocused;
+      } else {
+        // No last product either — treat as recommend (show categories)
+        intent = "recommend";
+        focused = null;
+      }
     } else {
-      // User named something but zero score — product not found at all
-      focused = null; // will trigger "not found" reply
+      // User named something but zero score — product not found
+      focused = null; // triggers "not found + suggestions" reply
     }
   } else {
     // For all other intents, keep focused on the last discussed item if available
