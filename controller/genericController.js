@@ -1282,4 +1282,5 @@ module.exports = {
   createEntityController,
   getDynamicSection,
   getAllDynamicSections,
+  fetchAllRecords,
 };

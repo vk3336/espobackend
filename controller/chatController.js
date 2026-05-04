@@ -1,5 +1,6 @@
 // controller/chatController.js
 const { espoRequest } = require("./espoClient");
+const { fetchAllRecords } = require("./genericController");
 
 /**
  * In-memory conversation state (optional).
@@ -944,11 +945,29 @@ function scoreProduct(p, query) {
   const slug = norm(p.productslug);
   const code = norm(getFabricCode(p));
 
+  // Normalize: treat spaces and dashes as equivalent for matching
+  const normFlex = (s) => s.replace(/[-\s]+/g, "");
+  const nameFlex = normFlex(name);
+  const slugFlex = normFlex(slug);
+  const codeFlex = normFlex(code);
+
   for (const t of uniq) {
     if (!t) continue;
+    const tFlex = normFlex(t);
+
     if (name.includes(t)) score += 6;
     if (slug.includes(t)) score += 5;
     if (code && code.includes(t)) score += 7;
+
+    // Flexible matching (spaces/dashes ignored)
+    if (tFlex.length >= 3) {
+      if (nameFlex.includes(tFlex)) score += 5;
+      if (slugFlex.includes(tFlex)) score += 4;
+      if (codeFlex && codeFlex.includes(tFlex)) score += 6;
+    }
+
+    // Exact code match (highest priority)
+    if (code && (code === t || codeFlex === tFlex)) score += 15;
   }
 
   if (query?.color) {
@@ -1119,6 +1138,21 @@ async function fetchEntityList(entity) {
   const e = cleanStr(entity);
   if (!e) return [];
 
+  // CProduct: use the shared fetchAllRecords which handles full pagination,
+  // delta refresh, and caching — same as the generic API endpoint.
+  if (e === "CProduct") {
+    try {
+      const data = await fetchAllRecords(e, {
+        orderBy: "modifiedAt",
+        order: "desc",
+      });
+      return Array.isArray(data?.list) ? data.list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  // Other entities: direct EspoCRM fetch with configurable maxSize
   const maxSizeDefault = Number(process.env.CHAT_ENTITY_MAX_SIZE || 120);
   const perEntityKey = `CHAT_MAX_SIZE_${e.toUpperCase()}`;
   const maxSize = Number(process.env[perEntityKey] || maxSizeDefault);
@@ -1304,7 +1338,14 @@ async function parseUserMessageWithOpenAI({ message, context }) {
     "- If asking for list/suggestions => recommend.\n" +
     "- If asking quote/price/contact => lead.\n" +
     "- Extract contactInfo fields if present.\n" +
-    "IMPORTANT: translate search cues (color/weave/keywords) into English if possible for matching.";
+    "IMPORTANT: translate search cues (color/weave/keywords) into English if possible for matching.\n" +
+    "CRITICAL refersToPrevious rule: set refersToPrevious=true ONLY when the user says something like\n" +
+    "  'tell me more', 'give me details', 'what about it', 'its specifications' — with NO new product name.\n" +
+    "  If the user explicitly names a product (e.g. 'majestica 767', 'nokia-601') set refersToPrevious=false\n" +
+    "  and put that product name in query.keywords. Never let a phone number or email override this.\n" +
+    "CRITICAL keywords rule: always extract the product code/name into query.keywords even if the message\n" +
+    "  also contains contact info (phone, email, company). E.g. 'tell me about majestica 767 and my number\n" +
+    "  is 8866791095' => keywords=['majestica','767','majestica-767'], phoneNumber='8866791095'.";
 
   const user = `User message: ${message}\nContext: ${safeJson(context || {})}`;
   return openaiJson("chat_action_v3", schema, system, user);
@@ -1394,6 +1435,101 @@ function pickDisplayPairs(entity, rec) {
   return pairs;
 }
 
+/**
+ * Build a rich, structured product details reply.
+ * This is used as the ReplyPlan for OpenAI so it has all the facts.
+ */
+function buildProductDetailsReply(p) {
+  if (!p) return "I couldn't find details for that product.";
+
+  const lines = [];
+
+  // Title + tagline
+  const title = pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p));
+  if (title) lines.push(`📦 ${title}`);
+  if (p.productTagline) lines.push(cleanStr(p.productTagline));
+
+  lines.push(""); // blank line
+
+  // ── Technical Specifications ──
+  lines.push("🔬 Technical Specifications");
+
+  const code = getFabricCode(p);
+  if (code) lines.push(`  Fabric Code    : ${code}`);
+
+  const content = toArr(p.content).filter(Boolean).join(", ");
+  if (content) lines.push(`  Material       : ${content}`);
+
+  if (p.gsm || p.ozs) {
+    const gsmStr = p.gsm ? `${p.gsm} GSM` : "";
+    const ozsStr = p.ozs ? `${p.ozs} oz` : "";
+    lines.push(`  Weight         : ${[gsmStr, ozsStr].filter(Boolean).join(" / ")}`);
+  }
+
+  if (p.cm || p.inch) {
+    const cmStr = p.cm ? `${p.cm} cm` : "";
+    const inStr = p.inch ? `${p.inch} inch` : "";
+    lines.push(`  Width          : ${[cmStr, inStr].filter(Boolean).join(" / ")}`);
+  }
+
+  const structure = toArr(p.structure).filter(Boolean).join(", ");
+  if (structure) lines.push(`  Weave          : ${structure}`);
+
+  const design = cleanStr(p.design);
+  if (design && design !== "N/A") lines.push(`  Design         : ${design}`);
+
+  const colors = toArr(p.color).filter(Boolean).join(", ");
+  if (colors) lines.push(`  Color          : ${colors}`);
+
+  const finish = toArr(p.finish).filter(Boolean).join(", ");
+  if (finish) lines.push(`  Finish         : ${finish}`);
+
+  if (p.category) lines.push(`  Category       : ${cleanStr(p.category)}`);
+
+  lines.push(""); // blank line
+
+  // ── Supply & Ordering ──
+  lines.push("📦 Supply & Ordering");
+
+  if (p.salesMOQ && p.uM) lines.push(`  MOQ            : ${p.salesMOQ} ${p.uM}`);
+  else if (p.salesMOQ) lines.push(`  MOQ            : ${p.salesMOQ}`);
+
+  if (p.supplyModel) lines.push(`  Supply Model   : ${cleanStr(p.supplyModel)}`);
+
+  if (p.collectionName) lines.push(`  Collection     : ${cleanStr(p.collectionName)}`);
+
+  lines.push(""); // blank line
+
+  // ── Suitability ──
+  const suitability = toArr(p.suitability).filter(Boolean);
+  if (suitability.length) {
+    lines.push("👗 Best Suited For");
+    // Group by garment type, show top entries
+    suitability.slice(0, 6).forEach((s) => lines.push(`  • ${cleanStr(s)}`));
+    lines.push("");
+  }
+
+  // ── Short description ──
+  const shortDesc = cleanStr(p.shortProductDescription);
+  if (shortDesc) {
+    lines.push("ℹ️ About");
+    lines.push(`  ${shortDesc}`);
+    lines.push("");
+  }
+
+  // ── Ratings ──
+  if (p.ratingValue && p.ratingCount) {
+    lines.push(`⭐ Rating: ${p.ratingValue}/5 (${p.ratingCount} reviews)`);
+    lines.push("");
+  }
+
+  // ── Product URL ──
+  const url = getFrontendUrlForProduct(p);
+  if (url) lines.push(`🔗 View full details: ${url}`);
+
+  return lines.join("\n");
+}
+
 function buildNonProductDetailsReply(entity, rec) {
   const title = getItemTitle(entity, rec) || `${entity} info`;
   const lines = [title];
@@ -1471,7 +1607,13 @@ async function handleChatMessage(req, res) {
     };
   }
 
-  const intent = action?.intent || "unknown";
+  // If OpenAI classified as "lead" but the message also contains product keywords,
+  // we'll re-evaluate after scoring. Store rawIntent for now.
+  const rawIntent = action?.intent || "unknown";
+  const hasProductKeywords = (action?.query?.keywords?.length > 0) &&
+    (action?.query?.keywords?.some(k => k && k.length >= 3));
+  // intent will be finalized after scoring (see below)
+  let intent = rawIntent;
   const detail = normalizeDetail(action?.detail, mode);
   const language = cleanStr(action?.language) || "auto";
 
@@ -1493,7 +1635,8 @@ async function handleChatMessage(req, res) {
   if (clientIp) mergedContact.cClientIP = clientIp;
   if (userAgent) mergedContact.cUserAgent = userAgent;
 
-  // 3) Preserve leadId
+  // 3) Preserve leadId + increment turn counter
+  const turnNumber = Number(context?.turnNumber || 0) + 1;
   const nextContext = {
     ...context,
     contactInfo: mergedContact,
@@ -1501,6 +1644,7 @@ async function handleChatMessage(req, res) {
       cleanStr(context?.leadId) || cleanStr(context?.leadCaptureId) || null,
     lastIntent: intent,
     lastItems: Array.isArray(context?.lastItems) ? context.lastItems : [],
+    turnNumber,
   };
 
   // 4) Upsert Lead (return debug)
@@ -1560,25 +1704,53 @@ async function handleChatMessage(req, res) {
   const topProductScore = rankedProducts[0]?.score || 0;
 
   const minScore = Number(process.env.CHAT_MIN_SCORE || 10);
+  // For details intent use a lower threshold — a partial name match should still win
+  const detailsMinScore = Math.max(2, Math.floor(minScore / 3));
   const hasAnyMatch = !!topAll && topAllScore >= minScore;
   const hasProductMatch = !!topProduct && topProductScore >= minScore;
+  // A "weak" product match — user named something but score is low (product not found clearly)
+  const hasWeakProductMatch = !!topProduct && topProductScore >= detailsMinScore && topProductScore < minScore;
+
+  // Finalize intent: if OpenAI said "lead" but user also named a product clearly,
+  // treat as "details" so the product answer isn't dropped.
+  if (rawIntent === "lead" && hasProductKeywords && hasProductMatch) {
+    intent = "details";
+  }
 
   const lastItems = Array.isArray(nextContext?.lastItems)
     ? nextContext.lastItems
     : [];
   const refersToPrev = !!action?.refersToPrevious;
 
-  let focused = topAll;
+  let focused = null;
 
-  if (refersToPrev && lastItems.length) {
+  // Build a lookup map for quick access by entity:id key
+  const itemMap = new Map(
+    rankedAll.map(({ it }) => [itemKey(it.entity, it.id), it]),
+  );
+
+  // Helper: resolve lastItems[0] from context back to a live record
+  function resolveLastFocused() {
+    if (!lastItems.length) return null;
     const wanted = lastItems[0];
     const key = itemKey(wanted?.entity, wanted?.id);
-    if (key) {
-      const map = new Map(
-        rankedAll.map(({ it }) => [itemKey(it.entity, it.id), it]),
-      );
-      focused = map.get(key) || topAll;
+    return key ? (itemMap.get(key) || null) : null;
+  }
+
+  if (intent === "details") {
+    if (topProductScore >= detailsMinScore) {
+      // User named a product (strong or weak match) — always use the top scored product
+      focused = topProduct;
+    } else if (!hasProductKeywords) {
+      // User named nothing new — continue with the last discussed item
+      focused = resolveLastFocused() || topProduct || topAll;
+    } else {
+      // User named something but zero score — product not found at all
+      focused = null; // will trigger "not found" reply
     }
+  } else {
+    // For all other intents, keep focused on the last discussed item if available
+    focused = resolveLastFocused() || topAll;
   }
 
   const suggestions = rankedProducts
@@ -1626,9 +1798,10 @@ async function handleChatMessage(req, res) {
         ? [{ entity: topAll.entity, id: topAll.id }]
         : [];
   } else if (intent === "details") {
-    nextContext.lastItems = focused
-      ? [{ entity: focused.entity, id: focused.id }]
-      : [];
+    // Save focused product so ALL follow-up questions stay on the same product
+    if (focused) {
+      nextContext.lastItems = [{ entity: focused.entity, id: focused.id }];
+    }
     if (focused?.entity === "CProduct") {
       nextContext.lastProductIds = [focused.id];
       nextContext.lastProduct = {
@@ -1638,69 +1811,79 @@ async function handleChatMessage(req, res) {
       };
     }
   }
+  // For lead/smalltalk/unknown — lastItems/lastProduct are preserved unchanged
+  // (nextContext already spread from context above, so no action needed)
+
+  // Collect unique categories from all products for category prompts
+  const availableCategories = Array.from(
+    new Set(
+      items
+        .filter((it) => it.entity === "CProduct")
+        .map((it) => cleanStr(it.record?.category))
+        .filter(Boolean)
+    )
+  ).sort();
 
   let baseReply = "";
   if (intent === "availability") {
     baseReply = hasProductMatch
       ? "Yes — we have matching fabrics in our catalogue. Do you want details?"
-      : "I couldn’t find an exact match in our catalogue. Can you share GSM, content (cotton/poly), and weave (poplin/twill/denim)?";
+      : "I couldn't find an exact match in our catalogue. Can you share GSM, content (cotton/poly), and weave (poplin/twill/denim)?";
   } else if (intent === "recommend") {
-    if (hasProductMatch) {
+    const hasFilters = hasProductKeywords || query?.color || query?.weave || query?.structure || toArr(query?.content).length;
+    if (!hasFilters) {
+      // No filter given — ask which category
+      const catList = availableCategories.length
+        ? availableCategories.map((c) => `- ${c}`).join("\n")
+        : "- Woven Fabrics\n- Knit Fabrics\n- Denim";
+      baseReply = `We carry products across these categories:\n\n${catList}\n\nWhich category are you interested in? You can also tell me a color, GSM, or fabric type.`;
+    } else if (hasProductMatch) {
       const top3 = rankedProducts
         .filter((x) => x.score > 0)
         .slice(0, 3)
         .map(({ it }) => {
           const p = it.record;
-          const title = pickFirstNonEmpty(
-            p.productTitle,
-            p.name,
-            getFabricCode(p),
-          );
+          const title = pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p));
           const code = getFabricCode(p);
           const url = getFrontendUrlForProduct(p);
-          const meta = [
-            cleanStr(p.category),
-            p.gsm ? `${cleanStr(p.gsm)} GSM` : "",
-            toArr(p.color).slice(0, 2).join(", "),
-          ]
-            .filter(Boolean)
-            .join(" · ");
-          return `• ${title}${meta ? ` — ${meta}` : ""}\n  Fabric Code: ${code || "-"}\n  ${url || ""}`.trim();
+          const colorStr = toArr(p.color).slice(0, 2).join(", ");
+          const contentStr = toArr(p.content).filter(Boolean).join(", ");
+          const structureStr = toArr(p.structure).filter(Boolean).join(", ");
+          const meta = [contentStr, structureStr, p.gsm ? `${p.gsm} GSM` : "", colorStr]
+            .filter(Boolean).join(" · ");
+          return (
+            `• ${title}\n` +
+            `  Code: ${code || "-"}  |  ${meta}\n` +
+            (p.supplyModel ? `  Supply: ${cleanStr(p.supplyModel)}\n` : "") +
+            (url ? `  ${url}` : "")
+          ).trim();
         });
-
-      baseReply = `Here are a few matching options:\n${top3.join("\n")}\n\nWant details for the best match?`;
+      baseReply = `Here are matching options:\n\n${top3.join("\n\n")}\n\nWant full details on any of these?`;
     } else {
-      baseReply =
-        "I couldn’t find close matches. Tell me color, GSM range, content, and end-use (shirts/dresses/uniforms).";
+      const catList = availableCategories.length
+        ? availableCategories.map((c) => `- ${c}`).join("\n")
+        : "";
+      baseReply = `I couldn't find close matches. We carry:\n\n${catList}\n\nCould you tell me the color, GSM range, content, and end-use you need?`;
     }
   } else if (intent === "details") {
     if (!focused) {
-      baseReply =
-        "Which item should I describe? Share the name/title (or a keyword).";
+      // User named a product but we couldn't find it — show close suggestions
+      const top3suggestions = rankedProducts
+        .filter((x) => x.score > 0)
+        .slice(0, 3)
+        .map(({ it }) => {
+          const p = it.record;
+          const code = getFabricCode(p);
+          const title = pickFirstNonEmpty(p.productTitle, p.name, code);
+          return `- **${code}** — ${title}`;
+        });
+      if (top3suggestions.length) {
+        baseReply = `I couldn't find an exact match for that product. Here are some close options:\n\n${top3suggestions.join("\n")}\n\nCould you confirm the product code or name?`;
+      } else {
+        baseReply = "I couldn't find that product in our catalogue. Could you double-check the name or code?";
+      }
     } else if (focused.entity === "CProduct") {
-      const p = focused.record;
-      const lines = [];
-      lines.push(pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p)));
-      const code = getFabricCode(p);
-      if (code) lines.push(`Fabric Code: ${code}`);
-
-      const bits = [];
-      if (p.category) bits.push(cleanStr(p.category));
-      if (p.gsm) bits.push(`${cleanStr(p.gsm)} GSM`);
-      const content = toArr(p.content).filter(Boolean).join(", ");
-      if (content) bits.push(content);
-      const structure = toArr(p.structure).filter(Boolean).join(", ");
-      if (structure) bits.push(structure);
-      const finish = toArr(p.finish).filter(Boolean).join(", ");
-      if (finish) bits.push(finish);
-      const colors = toArr(p.color).filter(Boolean).slice(0, 4).join(", ");
-      if (colors) bits.push(colors);
-      if (bits.length) lines.push(bits.join(" · "));
-
-      const url = getFrontendUrlForProduct(p);
-      if (url) lines.push(url);
-
-      baseReply = lines.join("\n");
+      baseReply = buildProductDetailsReply(focused.record);
     } else {
       baseReply = buildNonProductDetailsReply(focused.entity, focused.record);
     }
@@ -1708,7 +1891,7 @@ async function handleChatMessage(req, res) {
     if (hasAnyMatch && topAll) {
       if (topAll.entity === "CProduct") {
         baseReply =
-          "Tell me what fabric you’re looking for (color, weave/structure, GSM, content). I’ll check our catalogue.";
+          "Tell me what fabric you're looking for (color, weave/structure, GSM, content). I'll check our catalogue.";
       } else {
         baseReply = buildNonProductDetailsReply(topAll.entity, topAll.record);
       }
@@ -1730,17 +1913,91 @@ async function handleChatMessage(req, res) {
     try {
       const extra = getChatExtraInstructions();
 
-      const system =
-        "You are a helpful fabric catalogue assistant.\n" +
-        "Reply in the SAME language as the user.\n" +
-        "Be natural and human.\n" +
-        "Do NOT output JSON.\n" +
-        "Use only the facts in ReplyPlan.\n" +
-        "If ContactQuestion is present, ask ONLY that ONE question at the end." +
-        (extra ? `\n\n---\nExtra instructions (from env):\n${extra}` : "");
+      // For product details, pass the full product record so OpenAI can write a rich reply.
+      // For other intents, pass a lightweight summary of the last discussed product
+      // so OpenAI can continue the conversation naturally.
+      let productDataSection = "";
 
-      const user = `User message: ${message}\n\nReplyPlan: ${safeJson(plan)}\n\nContactQuestion: ${askOne}`;
-      replyText = await openaiText(system, user, 420);
+      const focusedProduct = focused?.entity === "CProduct" ? focused.record : null;
+      const lastProductInContext = nextContext?.lastProduct || context?.lastProduct || null;
+
+      if (intent === "details" && focusedProduct) {
+        const p = focusedProduct;
+        const productFacts = {
+          title: pickFirstNonEmpty(p.productTitle, p.name, getFabricCode(p)),
+          tagline: cleanStr(p.productTagline),
+          fabricCode: getFabricCode(p),
+          material: toArr(p.content).filter(Boolean).join(", "),
+          gsm: p.gsm,
+          ozs: p.ozs,
+          widthCm: p.cm,
+          widthInch: p.inch,
+          weave: toArr(p.structure).filter(Boolean).join(", "),
+          design: cleanStr(p.design),
+          color: toArr(p.color).filter(Boolean).join(", "),
+          finish: toArr(p.finish).filter(Boolean).join(", "),
+          category: cleanStr(p.category),
+          collection: cleanStr(p.collectionName),
+          moq: p.salesMOQ ? `${p.salesMOQ} ${cleanStr(p.uM || "Meter")}` : null,
+          supplyModel: cleanStr(p.supplyModel),
+          suitability: toArr(p.suitability).filter(Boolean).slice(0, 8),
+          shortDescription: cleanStr(p.shortProductDescription),
+          ratingValue: p.ratingValue,
+          ratingCount: p.ratingCount,
+          productUrl: getFrontendUrlForProduct(p),
+          productQ1: cleanStr(p.productQ1), productA1: cleanStr(p.productA1),
+          productQ2: cleanStr(p.productQ2), productA2: cleanStr(p.productA2),
+          productQ3: cleanStr(p.productQ3), productA3: cleanStr(p.productA3),
+          productQ4: cleanStr(p.productQ4), productA4: cleanStr(p.productA4),
+          productQ5: cleanStr(p.productQ5), productA5: cleanStr(p.productA5),
+          productQ6: cleanStr(p.productQ6), productA6: cleanStr(p.productA6),
+        };
+        Object.keys(productFacts).forEach(
+          (k) => (productFacts[k] === null || productFacts[k] === "" || productFacts[k] === undefined) && delete productFacts[k]
+        );
+        productDataSection = `\n\nFullProductData: ${safeJson(productFacts)}`;
+      } else if (lastProductInContext) {
+        // Pass a lightweight reminder of the last discussed product
+        productDataSection = `\n\nLastDiscussedProduct: ${safeJson(lastProductInContext)}`;
+      }
+
+      const system =
+        "You are a helpful, friendly fabric catalogue assistant for Amrita Global Enterprise.\n" +
+        "Reply in the SAME language as the user.\n" +
+        "Be warm, concise, and professional — like a knowledgeable sales rep.\n" +
+        "Do NOT output JSON or raw code.\n" +
+        `This is turn number ${turnNumber} of the conversation.\n` +
+        (turnNumber === 1
+          ? "GREETING: This is the FIRST message — greet the user by first name if known, otherwise say 'Hi there'. Introduce yourself briefly.\n"
+          : "NO GREETING: This is NOT the first message — do NOT say 'Hi there' or re-introduce yourself. Jump straight to answering.\n") +
+        "CONVERSATION CONTINUITY: If LastDiscussedProduct is provided, the user is still talking about that\n" +
+        "  product. Reference it naturally in your reply (e.g. 'For Nokia-601, ...'). Do not switch topics.\n" +
+        "PRODUCT NOT FOUND: If ReplyPlan says 'couldn't find', do NOT invent product details. Show the\n" +
+        "  close options from ReplyPlan and ask the user to confirm the correct product name/code.\n" +
+        "CATEGORY LISTING: If ReplyPlan lists categories, present them as a clean bullet list and ask\n" +
+        "  which one the user wants — do not show random products.\n" +
+        "Use markdown formatting in your replies:\n" +
+        "  - Use ### for section headings (e.g. ### Technical Specifications)\n" +
+        "  - Use **label** for bold field names (e.g. **Material:** 100% Cotton)\n" +
+        "  - Use - for bullet list items\n" +
+        "  - Use plain text for paragraphs\n" +
+        "When showing product details, always include these sections if data is available:\n" +
+        "  1. A short intro line with product name and tagline\n" +
+        "  2. ### Technical Specifications — list Material, Weight, Width, Weave, Design, Color, Finish\n" +
+        "  3. ### Supply & Ordering — list Fabric Code, MOQ, Supply Model, Collection\n" +
+        "  4. ### Best Suited For — bullet list of suitability items\n" +
+        "  5. A closing line with the product URL as a markdown link [View full details](url)\n" +
+        "Use only the facts from ReplyPlan and FullProductData. Do not invent specs.\n" +
+        "If ContactQuestion is present, ask ONLY that ONE question at the end — keep it friendly and on a new line." +
+        (extra ? `\n\n---\nExtra instructions:\n${extra}` : "");
+
+      const user =
+        `User message: ${message}\n\n` +
+        `ReplyPlan: ${safeJson(plan)}` +
+        productDataSection +
+        `\n\nContactQuestion: ${askOne}`;
+
+      replyText = await openaiText(system, user, 600);
       openaiReplyOk = true;
     } catch {
       replyText = baseReply + (askOne ? `\n\n${askOne}` : "");
