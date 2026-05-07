@@ -6,7 +6,7 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 const express = require("express");
-//const path = require("path");
+const path = require("path");
 const cors = require("cors");
 const helmet = require("helmet");
 const { createEntityRoutes } = require("./routes/generic");
@@ -27,12 +27,12 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet({ contentSecurityPolicy: false }));
 
 // // Serve static assets explicitly because Vercel rewrites all requests to index.js.
-// app.use(
-//   express.static(path.join(__dirname, "public"), {
-//     maxAge: "30d",
-//     immutable: true,
-//   }),
-// );
+ app.use(
+   express.static(path.join(__dirname, "public"), {
+     maxAge: "30d",
+     immutable: true,
+   }),
+ );
 
 /**
  * IMPORTANT for caching:
