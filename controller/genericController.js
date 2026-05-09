@@ -1085,9 +1085,7 @@ const createEntityController = (entityName) => {
         });
       }
 
-      const data = await fetchAllRecords(entityName, {
-        select: fieldName,
-      });
+      const data = await fetchAllRecords(entityName);
 
       const uniqueValues = new Set();
 
