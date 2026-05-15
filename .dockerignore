@@ -1,0 +1,18 @@
+# Git
+.git
+.gitignore
+
+# Docker files themselves (no need to copy them into the image)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Dev / editor noise
+.env
+.env.*
+!.env.example
+node_modules
+npm-debug.log*
+
+# Build artefacts
+eslint-report.txt

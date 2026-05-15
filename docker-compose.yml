@@ -1,0 +1,14 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: espobackend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"          # host:container  — change the left side if 3000 is taken
+    env_file:
+      - .env                 # loads all your environment variables from .env
+    environment:
+      NODE_ENV: production
+      RUN_STARTUP_JOBS: "true"   # enable cache warmer & schedulers inside the container
