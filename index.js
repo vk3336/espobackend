@@ -16,6 +16,7 @@ const indexnowRoutes = require("./routes/indexnow");
 const cacheRoutes = require("./routes/cache");
 const authRoutes = require("./routes/auth");
 const dynamicSectionRoutes = require("./routes/dynamicSection");
+const feedRoutes = require("./routes/feedRoutes");
 const { requireAdminToken } = require("./middleware/requireAdminToken");
 const { startIndexNowScheduler } = require("./utils/indexnowScheduler");
 const { warmUpCache, scheduleCacheRefresh } = require("./utils/cacheWarmer");
@@ -62,8 +63,8 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "100kb" }));
+app.use(express.urlencoded({ extended: true, limit: "25kb" }));
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -200,6 +201,10 @@ apiBaseNames.forEach((baseName) => {
   app.use(`/${baseName}/cache`, requireAdminToken, cacheRoutes);
 });
 
+// Google Merchant Center feed (root path, not under /api/, no auth — must be
+// publicly fetchable by Merchant Center crawlers).
+app.use("/feed", feedRoutes);
+
 // Basic health check route
 app.get("/", (req, res) => {
   const availableRoutes = [];
@@ -235,6 +240,7 @@ app.get("/", (req, res) => {
         "Get records by field value",
       "GET /:entity/search/:searchValue":
         "Search products by keywords or productTitle",
+        "Google API":"BASE_URL/feed/google-merchant.xml",
     },
     authEndpoints: {
       "POST /:base/auth/register":
@@ -246,8 +252,18 @@ app.get("/", (req, res) => {
   });
 });
 
-// Health check endpoint with more detailed information
+// Public health check — keep minimal to avoid exposing process internals,
+// env presence, rate-limit state, or cache stats. Detailed diagnostics should
+// live behind admin auth.
 app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Detailed diagnostics endpoint — admin only.
+app.get("/health/detailed", requireAdminToken, (req, res) => {
   const memoryUsage = process.memoryUsage();
   const uptime = process.uptime();
   const { getCacheStats } = require("./utils/cache");
